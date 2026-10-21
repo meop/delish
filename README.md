@@ -21,6 +21,25 @@ unless set), or `cmd.exe` when there is none. It is the shell an ssh login would
 
 `deskpty status` says whether a server is listening.
 
+### Another host's desktop, over ssh
+
+```sh
+deskpty [ssh options] <host> [command]
+```
+
+is `ssh <host> [command]`, run in the host's desktop session: with no command, an interactive login shell there, in
+this terminal; with one, the login shell runs it (the words after the host are joined with spaces, as ssh joins them)
+and its exit code is this one's. ssh's options go before the host (`deskpty -p 2222 -J jump user@glass`), and its
+config applies as it does to ssh.
+
+It runs `ssh -T <host> deskpty proxy`: `deskpty proxy` on the host joins ssh's stdin and stdout to the user's
+`deskptyd` there, and the frames go through ssh untouched. So the host needs `deskpty` on the PATH an ssh command gets
+(`DESKPTY_REMOTE_COMMAND` replaces `deskpty proxy`) and a `deskptyd` running in its desktop session. The command
+travels in the frames, not as a command line for the host's shell, so nothing in it is quoted twice. A password or
+host key prompt is answered before the terminal goes raw. A dropped connection ends the command, as with `ssh -t`.
+
+A host named `run`, `shell`, `status` or `proxy` is written `user@host`, or after `--`.
+
 ## How it works
 
 - `deskptyd` listens on a unix socket at `~/.deskpty/deskptyd.sock` (`%USERPROFILE%` on Windows), in a directory only
@@ -31,6 +50,8 @@ unless set), or `cmd.exe` when there is none. It is the shell an ssh login would
   environment, which is the desktop session's.
 - A client that goes away takes its command with it, as a closed terminal does. Over `ssh -t`, dropping the
   connection ends the command; without `-t`, sshd leaves the client running, as it does any command.
+- On Windows a login shell that is a batch file (`shell.bat`) is started through `cmd.exe` with the quoting Rust's
+  standard library gives a batch file, so `|`, `&`, `"` and `%` in the command reach the shell as written.
 - On Windows `deskptyd` is a GUI subsystem binary, so no console window opens in the session.
 - Commands run with the server's rights, never the ssh login's. An administrator's ssh login on Windows is elevated;
   a server started in the desktop session has the user's own, filtered token, so its commands are not. `deskptyd`

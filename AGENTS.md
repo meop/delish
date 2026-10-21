@@ -52,14 +52,17 @@ the `GPG_PRIVATE_KEY` and `GPG_PASSPHRASE` repository secrets. Never create the 
 
 | file              | what it is                                                                                 |
 | ----------------- | ------------------------------------------------------------------------------------------ |
-| `src/proto.rs`    | the wire format: frames of kind byte + u32 LE length + payload; one connection, one command. a spawn is size, login flag, cwd, argv, env |
+| `src/proto.rs`    | the wire format: frames of kind byte + u32 LE length + payload; one connection, one command. a spawn is size, login flag, cwd, argv, env. `READY` is the proxy's own, before the server's frames |
 | `src/sock.rs`     | the socket path and its permissions; `std` unix sockets, `uds_windows` on Windows          |
 | `src/pty/unix.rs` | `openpty`, the child in its own session with the pty as its controlling terminal            |
-| `src/pty/windows.rs` | ConPTY from kernel32 (the console's own; nothing side-loaded), command line quoting      |
+| `src/pty/windows.rs` | ConPTY from kernel32 (the console's own; nothing side-loaded)                          |
+| `src/cmdline.rs`  | a Windows command line from argv: the C runtime's quoting, or std's for a batch file through `cmd.exe`; plain strings, tested everywhere |
 | `src/shell.rs`    | the login shell: the account's with `-l` on unix, OpenSSH's `DefaultShell` on Windows    |
 | `src/term.rs`     | the client's terminal: size, and raw mode while a command runs                             |
 | `src/server.rs`   | `deskptyd`: one thread per connection, the command's output out, its exit code last; refuses to start elevated, as root, or in session 0 |
-| `src/client.rs`   | `deskpty run`: keys and resizes in, output out, the command's exit code as its own         |
+| `src/client.rs`   | `deskpty run`, `shell` and `<host>`: keys and resizes in, output out, the command's exit code as its own; to the local socket, or to ssh's stdin and stdout |
+| `src/ssh.rs`      | `deskpty <host>`: ssh's options and the host from the arguments, and the `ssh -T` command line |
+| `src/proxy.rs`    | `deskpty proxy`: on the host, ssh's stdin and stdout joined to the local server, after a `READY` or `ERROR` |
 
 ## Conventions
 
@@ -67,4 +70,6 @@ the `GPG_PRIVATE_KEY` and `GPG_PASSPHRASE` repository secrets. Never create the 
 - Version is in `Cargo.toml`; CI creates a signed tag on version bump
 - No async runtime: a few threads per connection, blocking I/O.
 - Dependencies stay few: `libc` on unix, `windows-sys` and `uds_windows` on Windows.
+- Through ssh the command goes in the spawn frame, never in ssh's command line: the host's shell only ever runs
+  `deskpty proxy`.
 - A command is never killed once it has been waited on: its pid may be another process's by then.

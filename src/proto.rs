@@ -15,6 +15,8 @@ pub const OUTPUT: u8 = 10;
 pub const EXIT: u8 = 11;
 /// server → client: why the command could not be run, last
 pub const ERROR: u8 = 12;
+/// proxy → client, before the server's frames: `deskpty proxy` on the host has reached its server
+pub const READY: u8 = 13;
 
 const MAX_FRAME: u32 = 16 << 20;
 

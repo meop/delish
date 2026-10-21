@@ -11,8 +11,7 @@ pub fn login_argv(cmd: Option<&str>) -> Vec<String> {
     #[cfg(windows)]
     {
         let (shell, option) = default_shell();
-        let comspec = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into());
-        windows_argv(&shell, &option, &comspec, cmd)
+        windows_argv(&shell, &option, cmd)
     }
 }
 
@@ -25,14 +24,9 @@ pub fn unix_argv(shell: &str, cmd: Option<&str>) -> Vec<String> {
     argv
 }
 
-/// a batch file is started through the command interpreter, as CreateProcess wants it
-pub fn windows_argv(shell: &str, option: &str, comspec: &str, cmd: Option<&str>) -> Vec<String> {
-    let lower = shell.to_ascii_lowercase();
-    let mut argv = if lower.ends_with(".bat") || lower.ends_with(".cmd") {
-        vec![comspec.to_string(), "/c".to_string(), shell.to_string()]
-    } else {
-        vec![shell.to_string()]
-    };
+/// a batch file needs no wrapping here: the command line for it is made to go through cmd.exe (`cmdline`)
+pub fn windows_argv(shell: &str, option: &str, cmd: Option<&str>) -> Vec<String> {
+    let mut argv = vec![shell.to_string()];
     if let Some(c) = cmd {
         argv.push(option.into());
         argv.push(c.into());
@@ -134,15 +128,12 @@ mod tests {
     }
 
     #[test]
-    fn a_windows_batch_shell_goes_through_the_interpreter() {
+    fn a_windows_shell_takes_its_option_and_the_command() {
         let bat = r"C:\ProgramData\ssh\shell.bat";
-        let cmd = r"C:\WINDOWS\system32\cmd.exe";
-        assert_eq!(windows_argv(bat, "-c", cmd, None), [cmd, "/c", bat]);
+        assert_eq!(windows_argv(bat, "-c", None), [bat]);
         assert_eq!(
-            windows_argv(bat, "-c", cmd, Some("wut p s")),
-            [cmd, "/c", bat, "-c", "wut p s"]
+            windows_argv(bat, "-c", Some("wut p s")),
+            [bat, "-c", "wut p s"]
         );
-        let pwsh = r"C:\Users\u\.ghpm\bin\pwsh.exe";
-        assert_eq!(windows_argv(pwsh, "-c", cmd, Some("x")), [pwsh, "-c", "x"]);
     }
 }

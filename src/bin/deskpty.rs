@@ -1,4 +1,8 @@
-const USAGE: &str = "usage: deskpty run [--] <command> [args...]\n       deskpty shell [-c <command>]\n       deskpty status";
+const USAGE: &str = "usage: deskpty [ssh options] <host> [command]
+       deskpty run [--] <command> [args...]
+       deskpty shell [-c <command>]
+       deskpty status
+       deskpty proxy";
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -39,9 +43,21 @@ fn main() {
                 1
             }
         },
-        _ => {
+        Some("proxy") => deskpty::proxy::run(),
+        None | Some("-h" | "--help") => {
             eprintln!("{USAGE}");
             2
+        }
+        // anything else is ssh's: a host, after its options
+        Some(first) => {
+            let all: Vec<String> = std::iter::once(first.to_string()).chain(args).collect();
+            match deskpty::ssh::parse(&all) {
+                Some(target) => deskpty::client::remote(target),
+                None => {
+                    eprintln!("{USAGE}");
+                    2
+                }
+            }
         }
     };
     // the command's own code: unix keeps its low byte, windows all of it

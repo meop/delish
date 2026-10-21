@@ -60,45 +60,6 @@ fn wide(s: &str) -> Vec<u16> {
         .collect()
 }
 
-/// one argument as the C runtime's command line parser reads it back: quoted where it has to be, a quote escaped
-/// with a backslash, and the backslashes before a quote (or the closing one) doubled
-fn quote(arg: &str, out: &mut String) {
-    if !arg.is_empty() && !arg.contains([' ', '\t', '\n', '\x0b', '"']) {
-        out.push_str(arg);
-        return;
-    }
-    out.push('"');
-    let mut slashes = 0;
-    for c in arg.chars() {
-        match c {
-            '\\' => slashes += 1,
-            '"' => {
-                out.extend(std::iter::repeat_n('\\', slashes * 2 + 1));
-                out.push('"');
-                slashes = 0;
-            }
-            _ => {
-                out.extend(std::iter::repeat_n('\\', slashes));
-                out.push(c);
-                slashes = 0;
-            }
-        }
-    }
-    out.extend(std::iter::repeat_n('\\', slashes * 2));
-    out.push('"');
-}
-
-fn command_line(argv: &[String]) -> String {
-    let mut out = String::new();
-    for (i, a) in argv.iter().enumerate() {
-        if i > 0 {
-            out.push(' ');
-        }
-        quote(a, &mut out);
-    }
-    out
-}
-
 fn pipe() -> io::Result<(Owned, Owned)> {
     let (mut read, mut write) = (ptr::null_mut(), ptr::null_mut());
     if unsafe { CreatePipe(&mut read, &mut write, ptr::null(), 0) } == 0 {
@@ -155,7 +116,7 @@ pub fn spawn(s: &Spawn) -> io::Result<(Reader, Writer, Control)> {
     si.StartupInfo.hStdError = INVALID_HANDLE_VALUE;
     si.lpAttributeList = list;
 
-    let mut cmdline = wide(&command_line(&s.argv));
+    let mut cmdline = wide(&crate::cmdline::command_line(&s.argv)?);
     let cwd = if !s.cwd.is_empty() && Path::new(&s.cwd).is_dir() {
         s.cwd.clone()
     } else {
@@ -254,29 +215,5 @@ impl Control {
         if let Some(c) = self.console.lock().unwrap().take() {
             unsafe { ClosePseudoConsole(c.0) };
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn arguments_quote_as_the_c_runtime_reads_them() {
-        let argv: Vec<String> = [
-            "nu",
-            "-c",
-            "print \"a b\"",
-            r"C:\dir with space\",
-            "",
-            r"x\\y",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-        assert_eq!(
-            command_line(&argv),
-            r#"nu -c "print \"a b\"" "C:\dir with space\\" "" x\\y"#
-        );
     }
 }
