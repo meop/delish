@@ -12,7 +12,8 @@ use crate::term;
 
 const FALLBACK: Size = Size { rows: 24, cols: 80 };
 
-pub fn run(argv: Vec<String>) -> i32 {
+/// `login` runs the user's login shell, interactive or with the one command in argv
+pub fn run(argv: Vec<String>, login: bool) -> i32 {
     let stream = match sock::connect() {
         Ok(s) => s,
         Err(e) => {
@@ -23,7 +24,7 @@ pub fn run(argv: Vec<String>) -> i32 {
             return 255;
         }
     };
-    match relay(stream, argv) {
+    match relay(stream, argv, login) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("deskpty: {e}");
@@ -32,7 +33,7 @@ pub fn run(argv: Vec<String>) -> i32 {
     }
 }
 
-fn relay(mut stream: sock::Stream, argv: Vec<String>) -> io::Result<i32> {
+fn relay(mut stream: sock::Stream, argv: Vec<String>, login: bool) -> io::Result<i32> {
     let tty = term::is_tty();
     let size = term::size().unwrap_or(FALLBACK);
     let env = ["TERM", "COLORTERM"]
@@ -47,6 +48,7 @@ fn relay(mut stream: sock::Stream, argv: Vec<String>) -> io::Result<i32> {
         proto::SPAWN,
         &Spawn {
             size,
+            login,
             cwd,
             argv,
             env,

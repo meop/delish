@@ -14,6 +14,11 @@ An ssh login is its own session: on Windows it cannot start rustup's symlinked p
 | `deskptyd` | the server: started in the desktop session, runs each command on a pty of its own                 |
 | `deskpty`  | the client: `deskpty run -- <cmd> [args...]` is that command's terminal, and exits with its code |
 
+`deskpty shell [-c <command>]` runs your login shell there instead, so your whole profile loads in the session: on
+Linux and macOS the account's shell with `-l` (`zsh -l -c '<command>'`); on Windows, which has no login shell, the
+shell OpenSSH is set to start (`HKLM\SOFTWARE\OpenSSH\DefaultShell`, with its `DefaultShellCommandOption`, `-c`
+unless set), or `cmd.exe` when there is none. It is the shell an ssh login would get, in the desktop session.
+
 `deskpty status` says whether a server is listening.
 
 ## How it works
@@ -27,6 +32,9 @@ An ssh login is its own session: on Windows it cannot start rustup's symlinked p
 - A client that goes away takes its command with it, as a closed terminal does. Over `ssh -t`, dropping the
   connection ends the command; without `-t`, sshd leaves the client running, as it does any command.
 - On Windows `deskptyd` is a GUI subsystem binary, so no console window opens in the session.
+- Commands run with the server's rights, never the ssh login's. An administrator's ssh login on Windows is elevated;
+  a server started in the desktop session has the user's own, filtered token, so its commands are not. `deskptyd`
+  refuses to start elevated, in session 0 (where a Windows ssh login is), or as root.
 
 ## Starting the server in the session
 

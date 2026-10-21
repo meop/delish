@@ -1,4 +1,4 @@
-const USAGE: &str = "usage: deskpty run [--] <command> [args...]\n       deskpty status";
+const USAGE: &str = "usage: deskpty run [--] <command> [args...]\n       deskpty shell [-c <command>]\n       deskpty status";
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -12,7 +12,18 @@ fn main() {
                 eprintln!("{USAGE}");
                 2
             } else {
-                deskpty::client::run(argv)
+                deskpty::client::run(argv, false)
+            }
+        }
+        Some("shell") => {
+            let rest: Vec<String> = args.collect();
+            match rest.as_slice() {
+                [] => deskpty::client::run(vec![], true),
+                [c, cmd] if c == "-c" => deskpty::client::run(vec![cmd.clone()], true),
+                _ => {
+                    eprintln!("{USAGE}");
+                    2
+                }
             }
         }
         Some("status") => match deskpty::sock::connect() {

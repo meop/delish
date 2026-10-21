@@ -52,12 +52,13 @@ the `GPG_PRIVATE_KEY` and `GPG_PASSPHRASE` repository secrets. Never create the 
 
 | file              | what it is                                                                                 |
 | ----------------- | ------------------------------------------------------------------------------------------ |
-| `src/proto.rs`    | the wire format: frames of kind byte + u32 LE length + payload; one connection, one command |
+| `src/proto.rs`    | the wire format: frames of kind byte + u32 LE length + payload; one connection, one command. a spawn is size, login flag, cwd, argv, env |
 | `src/sock.rs`     | the socket path and its permissions; `std` unix sockets, `uds_windows` on Windows          |
 | `src/pty/unix.rs` | `openpty`, the child in its own session with the pty as its controlling terminal            |
 | `src/pty/windows.rs` | ConPTY from kernel32 (the console's own; nothing side-loaded), command line quoting      |
+| `src/shell.rs`    | the login shell: the account's with `-l` on unix, OpenSSH's `DefaultShell` on Windows    |
 | `src/term.rs`     | the client's terminal: size, and raw mode while a command runs                             |
-| `src/server.rs`   | `deskptyd`: one thread per connection, the command's output out, its exit code last       |
+| `src/server.rs`   | `deskptyd`: one thread per connection, the command's output out, its exit code last; refuses to start elevated, as root, or in session 0 |
 | `src/client.rs`   | `deskpty run`: keys and resizes in, output out, the command's exit code as its own         |
 
 ## Conventions

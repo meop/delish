@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use crate::proto::{self, Size, Spawn};
 use crate::pty;
+use crate::shell;
 use crate::sock::{self, Stream};
 
 /// a line in ~/.deskpty/deskptyd.log: the server has no terminal to say it on
@@ -29,6 +30,7 @@ pub fn log(msg: &str) {
 }
 
 pub fn serve() -> io::Result<()> {
+    session_check()?;
     let listener = sock::listen()?;
     log(&format!(
         "listening on {} (pid {})",
@@ -51,7 +53,7 @@ pub fn serve() -> io::Result<()> {
 }
 
 fn handle(mut stream: Stream) -> io::Result<()> {
-    let spawn = match proto::read_frame(&mut stream)? {
+    let mut spawn = match proto::read_frame(&mut stream)? {
         Some((proto::SPAWN, payload)) => Spawn::decode(&payload)?,
         // `deskpty status` connects and goes: nothing to run, and nothing wrong
         None => return Ok(()),
@@ -62,6 +64,9 @@ fn handle(mut stream: Stream) -> io::Result<()> {
             ));
         }
     };
+    if spawn.login {
+        spawn.argv = shell::login_argv(spawn.argv.first().map(String::as_str));
+    }
     let (mut reader, mut writer, control) = match pty::spawn(&spawn) {
         Ok(p) => p,
         Err(e) => {
@@ -140,5 +145,67 @@ fn handle(mut stream: Stream) -> io::Result<()> {
     }
     let code = waiter.join().unwrap_or(255);
     log(&format!("{:?} exited {code}", spawn.argv));
+    Ok(())
+}
+
+/// what it runs is run as it is: a server started elevated, or as root, would hand that to every command, and one
+/// started outside the desktop session (a windows ssh login is session 0) would hand them none of the session
+#[cfg(unix)]
+fn session_check() -> io::Result<()> {
+    if unsafe { libc::geteuid() } == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "deskptyd runs as root: start it as the user, in the desktop session",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn session_check() -> io::Result<()> {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
+    };
+    use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, GetCurrentProcessId, OpenProcessToken,
+    };
+
+    let mut session = 0u32;
+    if unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if session == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "deskptyd is in session 0, not a desktop session: start it from the desktop, as a scheduled task that runs only when the user is logged on",
+        ));
+    }
+    let mut token: HANDLE = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+    let mut len = 0u32;
+    let ok = unsafe {
+        GetTokenInformation(
+            token,
+            TokenElevation,
+            (&mut elevation as *mut TOKEN_ELEVATION).cast(),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut len,
+        )
+    };
+    unsafe { CloseHandle(token) };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if elevation.TokenIsElevated != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "deskptyd is elevated: start it with the user's own rights, not as administrator",
+        ));
+    }
     Ok(())
 }

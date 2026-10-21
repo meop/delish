@@ -72,10 +72,12 @@ impl Size {
     }
 }
 
-/// what to run: argv, where, extra env on top of the server's own, and the terminal's size
+/// what to run: argv, where, extra env on top of the server's own, and the terminal's size. with `login` the server
+/// runs the user's login shell instead, and argv is empty or the one command for it to run
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Spawn {
     pub size: Size,
+    pub login: bool,
     pub cwd: String,
     pub argv: Vec<String>,
     pub env: Vec<(String, String)>,
@@ -85,6 +87,7 @@ impl Spawn {
     pub fn encode(&self) -> Vec<u8> {
         let mut b = Vec::new();
         b.extend_from_slice(&self.size.encode());
+        b.push(self.login as u8);
         put_str(&mut b, &self.cwd);
         b.extend_from_slice(&(self.argv.len() as u32).to_le_bytes());
         for a in &self.argv {
@@ -100,7 +103,8 @@ impl Spawn {
 
     pub fn decode(b: &[u8]) -> io::Result<Self> {
         let size = Size::decode(b)?;
-        let mut at = 4;
+        let login = *b.get(4).ok_or_else(|| bad("short frame"))? != 0;
+        let mut at = 5;
         let cwd = take_str(b, &mut at)?;
         let argc = take_u32(b, &mut at)?;
         let mut argv = Vec::new();
@@ -114,11 +118,12 @@ impl Spawn {
             let v = take_str(b, &mut at)?;
             env.push((k, v));
         }
-        if argv.is_empty() {
+        if (login && argv.len() > 1) || (!login && argv.is_empty()) {
             return Err(bad("no command"));
         }
         Ok(Spawn {
             size,
+            login,
             cwd,
             argv,
             env,
@@ -161,6 +166,7 @@ mod tests {
                 rows: 40,
                 cols: 120,
             },
+            login: false,
             cwd: "/home/x".into(),
             argv: vec!["nu".into(), "-c".into(), "print ünï".into()],
             env: vec![("TERM".into(), "xterm-256color".into())],
@@ -186,10 +192,25 @@ mod tests {
     fn a_spawn_without_a_command_is_refused() {
         let s = Spawn {
             size: Size { rows: 1, cols: 1 },
+            login: false,
             cwd: String::new(),
             argv: vec![],
             env: vec![],
         };
         assert!(Spawn::decode(&s.encode()).is_err());
+    }
+
+    #[test]
+    fn a_login_shell_takes_no_command_or_one() {
+        let shell = |argv: Vec<String>| Spawn {
+            size: Size { rows: 1, cols: 1 },
+            login: true,
+            cwd: String::new(),
+            argv,
+            env: vec![],
+        };
+        assert!(Spawn::decode(&shell(vec![]).encode()).is_ok());
+        assert!(Spawn::decode(&shell(vec!["wut p s".into()]).encode()).is_ok());
+        assert!(Spawn::decode(&shell(vec!["a".into(), "b".into()]).encode()).is_err());
     }
 }

@@ -5,5 +5,6 @@ pub mod client;
 pub mod proto;
 pub mod pty;
 pub mod server;
+pub mod shell;
 pub mod sock;
 pub mod term;
