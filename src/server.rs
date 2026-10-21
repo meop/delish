@@ -53,7 +53,9 @@ pub fn serve() -> io::Result<()> {
 fn handle(mut stream: Stream) -> io::Result<()> {
     let spawn = match proto::read_frame(&mut stream)? {
         Some((proto::SPAWN, payload)) => Spawn::decode(&payload)?,
-        _ => {
+        // `deskpty status` connects and goes: nothing to run, and nothing wrong
+        None => return Ok(()),
+        Some(_) => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "first frame is not a spawn",
