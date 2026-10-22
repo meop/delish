@@ -2,6 +2,7 @@ const USAGE: &str = "usage: deskpty [ssh options] <host> [command]
        deskpty run [--] <command> [args...]
        deskpty shell [-c <command>]
        deskpty status
+       deskpty --version
        deskpty proxy";
 
 fn main() {
@@ -30,19 +31,11 @@ fn main() {
                 }
             }
         }
-        Some("status") => match deskpty::sock::connect() {
-            Ok(_) => {
-                println!(
-                    "deskptyd is listening on {}",
-                    deskpty::sock::path().display()
-                );
-                0
-            }
-            Err(e) => {
-                println!("no deskptyd on {}: {e}", deskpty::sock::path().display());
-                1
-            }
-        },
+        Some("status") => deskpty::client::status(),
+        Some("-V" | "--version") => {
+            println!("deskpty {}", deskpty::proto::VERSION);
+            0
+        }
         Some("proxy") => deskpty::proxy::run(),
         Some(deskpty::client::HOP) => {
             let mut rest: Vec<String> = args.collect();

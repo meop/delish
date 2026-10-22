@@ -19,7 +19,12 @@ Linux and macOS the account's shell with `-l` (`zsh -l -c '<command>'`); on Wind
 shell OpenSSH is set to start (`HKLM\SOFTWARE\OpenSSH\DefaultShell`, with its `DefaultShellCommandOption`, `-c`
 unless set), or `cmd.exe` when there is none. It is the shell an ssh login would get, in the desktop session.
 
-`deskpty status` says whether a server is listening.
+`deskpty status` says whether a server is listening, and which version it is: it exits 0 when it is this deskpty's
+version, 1 with no server, and 3 with another, the case after an upgrade until the server is restarted.
+`deskpty --version` prints the client's.
+
+A client and a server speak a numbered protocol, and the server says its own and its version first: a pair that do not
+match stops at once and says which side to update, rather than misreading each other.
 
 ### Another host's desktop, over ssh
 
@@ -73,11 +78,16 @@ not the one the hop uses, when a local server is running.
 
 ## Starting the server in the session
 
-| OS      | how                                                                                                    |
-| ------- | ------------------------------------------------------------------------------------------------------ |
-| Linux   | `systemd-run --user --unit deskptyd deskptyd` (the user manager carries the desktop's env)             |
-| macOS   | a LaunchAgent with `LimitLoadToSessionType` `Aqua`, `launchctl bootstrap gui/$UID <plist>` + `kickstart` |
-| Windows | a scheduled task with logon mode "interactive only" (`schtasks /create ... /it`), then `schtasks /run`  |
+It starts with the desktop session and stays: only a process already in the session can start others with its env,
+display and token. Stopping it leaves programs a session started and left running alone, as closing a terminal does.
+
+| OS      | at login                                                                                                      | after an upgrade                                    |
+| ------- | ------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| Linux   | a systemd user unit, `WantedBy=graphical-session.target`, `KillMode=process`; `systemctl --user enable --now` | `systemctl --user restart deskptyd`                 |
+| macOS   | a LaunchAgent with `RunAtLoad`, `LimitLoadToSessionType` `Aqua` and `AbandonProcessGroup`                     | `launchctl kickstart -k gui/$UID/<label>`           |
+| Windows | a scheduled task at logon, interactive, `RunLevel` limited, no time limit (`Register-ScheduledTask`)          | `Stop-Process -Name deskptyd`, `Start-ScheduledTask` |
+
+An upgrade replaces the binary, not the server already running; until it is restarted, `deskpty status` exits 3.
 
 ## Building
 

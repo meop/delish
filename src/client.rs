@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use crate::proto::{self, Size, Spawn};
+use crate::proto::{self, Hello, Size, Spawn};
 use crate::sock;
 use crate::ssh;
 use crate::term;
@@ -20,10 +20,20 @@ pub const HOP: &str = "hop";
 /// `deskpty hop`'s first option: the remote command, as `deskpty <host>` found it
 pub const REMOTE_COMMAND_OPTION: &str = "--remote-command";
 
-/// how the frames ended: the command's code, or the connection's end before it
+/// how the frames ended: the command's code, or the connection's end before it, or before the server's hello
 enum End {
     Exit(i32),
     Closed,
+    NoHello,
+}
+
+/// what a server older than the hello does with this protocol's spawn: it cannot read it, and hangs up
+fn older_server(who: &str) -> i32 {
+    eprintln!(
+        "deskpty: {who}deskptyd hung up without saying its version, so it is older than this deskpty {}: update deskpty there, then restart deskptyd",
+        proto::VERSION
+    );
+    255
 }
 
 type Sink = Arc<Mutex<Box<dyn Write + Send>>>;
@@ -45,16 +55,59 @@ pub fn run(argv: Vec<String>, login: bool) -> i32 {
         .unwrap_or_default();
     let ended = stream
         .try_clone()
-        .and_then(|up| relay(stream, Box::new(up), spawn(argv, login, cwd), false, ""));
+        .and_then(|up| relay(stream, Box::new(up), spawn(argv, login, cwd), ""));
     match ended {
         Ok(End::Exit(code)) => code,
         Ok(End::Closed) => {
             eprintln!("deskpty: deskptyd closed the connection before the command exited");
             255
         }
+        Ok(End::NoHello) => older_server(""),
         Err(e) => {
             eprintln!("deskpty: {e}");
             255
+        }
+    }
+}
+
+/// whether this user's server is listening, and is this deskpty's version: 0 when it is, 1 with no server, 3 with
+/// another version, so a script can tell that a restart is due
+pub fn status() -> i32 {
+    let path = sock::path();
+    let mut stream = match sock::connect() {
+        Ok(s) => s,
+        Err(e) => {
+            println!("no deskptyd on {}: {e}", path.display());
+            return 1;
+        }
+    };
+    // a server older than the hello says nothing until it is sent a spawn
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let hello = match proto::read_frame(&mut stream) {
+        Ok(Some((proto::HELLO, payload))) => Hello::decode(&payload).ok(),
+        _ => None,
+    };
+    match hello {
+        Some(h) if h.version == proto::VERSION => {
+            println!("deskptyd {} is listening on {}", h.version, path.display());
+            0
+        }
+        Some(h) => {
+            println!(
+                "deskptyd {} is listening on {}, and this deskpty is {}: restart deskptyd to run this one",
+                h.version,
+                path.display(),
+                proto::VERSION
+            );
+            3
+        }
+        None => {
+            println!(
+                "a deskptyd older than this deskpty {} is listening on {}: restart deskptyd to run this one",
+                proto::VERSION,
+                path.display()
+            );
+            3
         }
     }
 }
@@ -107,18 +160,13 @@ pub fn hop(target: ssh::Target, remote: String) -> i32 {
     };
     let argv = target.command.into_iter().collect();
     let who = format!("{}: ", target.host);
-    let ended = relay(
-        down,
-        Box::new(up),
-        spawn(argv, true, String::new()),
-        true,
-        &who,
-    );
+    let ended = relay(down, Box::new(up), spawn(argv, true, String::new()), &who);
     // ssh ends once the host's command has, and has said itself why it failed, when it has
     let ssh_code = child.wait().ok().and_then(|s| s.code()).unwrap_or(255);
     match ended {
         Ok(End::Exit(code)) => code,
-        Ok(End::Closed) if ssh_code != 0 => ssh_code,
+        Ok(End::Closed | End::NoHello) if ssh_code != 0 => ssh_code,
+        Ok(End::NoHello) => older_server(&who),
         Ok(End::Closed) => {
             eprintln!(
                 "deskpty: the connection to {} closed before the command exited",
@@ -188,28 +236,52 @@ fn spawn(argv: Vec<String>, login: bool, cwd: String) -> Spawn {
     }
 }
 
-/// the spawn goes first. the terminal is taken over — raw, its keys read — only once the server is there: through
-/// ssh, which asks for a password or a host key on this same terminal, that is when the proxy says READY. `who` names
-/// the server's host in what it says
+/// the spawn goes first. the terminal is taken over — raw, its keys read — only once the server has said HELLO in
+/// this protocol: through ssh, which asks for a password or a host key on this same terminal, that comes after the
+/// proxy's READY. `who` names the server's host in what it says
 fn relay(
     mut down: impl Read,
     up: Box<dyn Write + Send>,
     spawn: Spawn,
-    wait_ready: bool,
     who: &str,
 ) -> io::Result<End> {
     let size = spawn.size;
     let up: Sink = Arc::new(Mutex::new(up));
     proto::write_frame(&mut *up.lock().unwrap(), proto::SPAWN, &spawn.encode())?;
 
-    let mut started = !wait_ready;
-    let mut raw = if started { take_over(&up, size) } else { None };
+    let mut started = false;
+    let mut raw = None;
     let mut stdout = io::stdout().lock();
     let end = loop {
         match proto::read_frame(&mut down)? {
-            Some((proto::READY, _)) if !started => {
+            Some((proto::READY, _)) if !started => {}
+            Some((proto::HELLO, payload)) if !started => {
+                let hello = Hello::decode(&payload)?;
+                if hello.protocol != proto::PROTOCOL {
+                    eprintln!(
+                        "deskpty: {who}deskptyd is {} and speaks protocol {}, this deskpty {} protocol {}: update deskpty on both machines, then restart deskptyd",
+                        hello.version,
+                        hello.protocol,
+                        proto::VERSION,
+                        proto::PROTOCOL
+                    );
+                    break End::Exit(255);
+                }
                 started = true;
                 raw = take_over(&up, size);
+            }
+            Some((proto::ERROR, msg)) => {
+                drop(raw.take());
+                eprintln!("deskpty: {who}{}", String::from_utf8_lossy(&msg));
+                break End::Exit(255);
+            }
+            // a server older than the hello runs the command and answers with its output
+            Some(_) if !started => {
+                eprintln!(
+                    "deskpty: {who}deskptyd is older than this deskpty {} and says no version: update deskpty there, then restart deskptyd",
+                    proto::VERSION
+                );
+                break End::Exit(255);
             }
             Some((proto::OUTPUT, bytes)) => {
                 stdout.write_all(&bytes)?;
@@ -220,12 +292,8 @@ fn relay(
                     payload[0], payload[1], payload[2], payload[3],
                 ]));
             }
-            Some((proto::ERROR, msg)) => {
-                drop(raw.take());
-                eprintln!("deskpty: {who}{}", String::from_utf8_lossy(&msg));
-                break End::Exit(255);
-            }
             Some(_) => {}
+            None if !started => break End::NoHello,
             None => break End::Closed,
         }
     };

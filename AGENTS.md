@@ -52,7 +52,7 @@ the `GPG_PRIVATE_KEY` and `GPG_PASSPHRASE` repository secrets. Never create the 
 
 | file              | what it is                                                                                 |
 | ----------------- | ------------------------------------------------------------------------------------------ |
-| `src/proto.rs`    | the wire format: frames of kind byte + u32 LE length + payload; one connection, one command. a spawn is size, login flag, cwd, argv, env. `READY` is the proxy's own, before the server's frames |
+| `src/proto.rs`    | the wire format: frames of kind byte + u32 LE length + payload; one connection, one command. the server's first frame is `HELLO` (protocol, version) and the client's `SPAWN`, which starts with the protocol: size, login flag, cwd, argv, env. `PROTOCOL` goes up with any change to a frame or payload. `READY` and `ERROR` from the proxy come before any of it and never change shape |
 | `src/sock.rs`     | the socket path and its permissions; `std` unix sockets, `uds_windows` on Windows          |
 | `src/pty/unix.rs` | `openpty`, the child in its own session with the pty as its controlling terminal            |
 | `src/pty/windows.rs` | ConPTY from kernel32 (the console's own; nothing side-loaded)                          |

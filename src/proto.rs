@@ -1,5 +1,7 @@
 //! The wire format between `deskpty` and `deskptyd`: frames of a kind byte, a little-endian u32 length, then the
-//! payload. One connection runs one command.
+//! payload. One connection runs one command. The server's first frame is a HELLO and the client's a SPAWN, each
+//! starting with the protocol they speak, so a client and a server that differ say so rather than misread each other.
+//! READY and ERROR from `deskpty proxy` come before any of it, and keep their shape in every protocol.
 
 use std::io::{self, Read, Write};
 
@@ -17,6 +19,12 @@ pub const EXIT: u8 = 11;
 pub const ERROR: u8 = 12;
 /// proxy → client, before the server's frames: `deskpty proxy` on the host has reached its server
 pub const READY: u8 = 13;
+/// server → client, first: the protocol it speaks and its version
+pub const HELLO: u8 = 14;
+
+/// the frames and their payloads; a change to either is a new protocol
+pub const PROTOCOL: u32 = 1;
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const MAX_FRAME: u32 = 16 << 20;
 
@@ -47,6 +55,35 @@ pub fn read_frame(r: &mut impl Read) -> io::Result<Option<(u8, Vec<u8>)>> {
     let mut payload = vec![0u8; len as usize];
     r.read_exact(&mut payload)?;
     Ok(Some((head[0], payload)))
+}
+
+/// what a server says first
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hello {
+    pub protocol: u32,
+    pub version: String,
+}
+
+impl Hello {
+    pub fn ours() -> Self {
+        Hello {
+            protocol: PROTOCOL,
+            version: VERSION.into(),
+        }
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut b = self.protocol.to_le_bytes().to_vec();
+        put_str(&mut b, &self.version);
+        b
+    }
+
+    pub fn decode(b: &[u8]) -> io::Result<Self> {
+        let mut at = 0;
+        let protocol = take_u32(b, &mut at)?;
+        let version = take_str(b, &mut at)?;
+        Ok(Hello { protocol, version })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,7 +124,7 @@ pub struct Spawn {
 
 impl Spawn {
     pub fn encode(&self) -> Vec<u8> {
-        let mut b = Vec::new();
+        let mut b = PROTOCOL.to_le_bytes().to_vec();
         b.extend_from_slice(&self.size.encode());
         b.push(self.login as u8);
         put_str(&mut b, &self.cwd);
@@ -103,10 +140,25 @@ impl Spawn {
         b
     }
 
+    /// the protocol is read first, and a client that speaks another is told which this server speaks
     pub fn decode(b: &[u8]) -> io::Result<Self> {
-        let size = Size::decode(b)?;
-        let login = *b.get(4).ok_or_else(|| bad("short frame"))? != 0;
-        let mut at = 5;
+        let mut at = 0;
+        let protocol = take_u32(b, &mut at)?;
+        if protocol != PROTOCOL {
+            // a client older than the protocol number starts its spawn with the terminal's size instead
+            let client = if protocol > 0xffff {
+                "the client is older and says no protocol".to_string()
+            } else {
+                format!("the client protocol {protocol}")
+            };
+            return Err(bad(&format!(
+                "this deskptyd is {VERSION} and speaks protocol {PROTOCOL}, {client}: update deskpty on both machines, then restart deskptyd"
+            )));
+        }
+        let size = Size::decode(&b[at..])?;
+        at += 4;
+        let login = *b.get(at).ok_or_else(|| bad("short frame"))? != 0;
+        at += 1;
         let cwd = take_str(b, &mut at)?;
         let argc = take_u32(b, &mut at)?;
         let mut argv = Vec::new();
@@ -174,6 +226,29 @@ mod tests {
             env: vec![("TERM".into(), "xterm-256color".into())],
         };
         assert_eq!(Spawn::decode(&s.encode()).unwrap(), s);
+    }
+
+    #[test]
+    fn hello_round_trips() {
+        assert_eq!(
+            Hello::decode(&Hello::ours().encode()).unwrap(),
+            Hello::ours()
+        );
+    }
+
+    #[test]
+    fn a_spawn_in_another_protocol_is_refused_with_this_one() {
+        let s = Spawn {
+            size: Size { rows: 1, cols: 1 },
+            login: true,
+            cwd: String::new(),
+            argv: vec![],
+            env: vec![],
+        };
+        let mut b = s.encode();
+        b[..4].copy_from_slice(&(PROTOCOL + 1).to_le_bytes());
+        let e = Spawn::decode(&b).unwrap_err().to_string();
+        assert!(e.contains(&format!("speaks protocol {PROTOCOL}")), "{e}");
     }
 
     #[test]

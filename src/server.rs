@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use crate::proto::{self, Size, Spawn};
+use crate::proto::{self, Hello, Size, Spawn};
 use crate::pty;
 use crate::shell;
 use crate::sock::{self, Stream};
@@ -53,8 +53,15 @@ pub fn serve() -> io::Result<()> {
 }
 
 fn handle(mut stream: Stream) -> io::Result<()> {
+    proto::write_frame(&mut stream, proto::HELLO, &Hello::ours().encode())?;
     let mut spawn = match proto::read_frame(&mut stream)? {
-        Some((proto::SPAWN, payload)) => Spawn::decode(&payload)?,
+        Some((proto::SPAWN, payload)) => match Spawn::decode(&payload) {
+            Ok(s) => s,
+            Err(e) => {
+                log(&format!("refused: {e}"));
+                return proto::write_frame(&mut stream, proto::ERROR, e.to_string().as_bytes());
+            }
+        },
         // `deskpty status` connects and goes: nothing to run, and nothing wrong
         None => return Ok(()),
         Some(_) => {
