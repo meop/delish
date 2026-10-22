@@ -45,9 +45,17 @@ fn main() {
         },
         Some("proxy") => deskpty::proxy::run(),
         Some(deskpty::client::HOP) => {
-            let rest: Vec<String> = args.collect();
+            let mut rest: Vec<String> = args.collect();
+            let remote = if rest.first().map(String::as_str)
+                == Some(deskpty::client::REMOTE_COMMAND_OPTION)
+                && rest.len() > 1
+            {
+                rest.drain(..2).nth(1).unwrap_or_default()
+            } else {
+                deskpty::client::remote_command()
+            };
             match deskpty::ssh::parse(&rest) {
-                Some(target) => deskpty::client::hop(target),
+                Some(target) => deskpty::client::hop(target, remote),
                 None => {
                     eprintln!("{USAGE}");
                     2

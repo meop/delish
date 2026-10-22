@@ -17,6 +17,8 @@ const FALLBACK: Size = Size { rows: 24, cols: 80 };
 
 /// the subcommand the server is handed for `deskpty <host>`: ssh from where it runs, never handed on again
 pub const HOP: &str = "hop";
+/// `deskpty hop`'s first option: the remote command, as `deskpty <host>` found it
+pub const REMOTE_COMMAND_OPTION: &str = "--remote-command";
 
 /// how the frames ended: the command's code, or the connection's end before it
 enum End {
@@ -72,19 +74,22 @@ pub fn remote(target: ssh::Target) -> i32 {
         );
         return 255;
     }
-    hop(target)
+    hop(target, remote_command())
+}
+
+/// what runs on the host: read where `deskpty <host>` was typed, and handed to the server with the rest
+pub fn remote_command() -> String {
+    std::env::var("DESKPTY_REMOTE_COMMAND").unwrap_or_else(|_| ssh::REMOTE_COMMAND.into())
 }
 
 /// ssh, from here: what the server runs for `remote`
-pub fn hop(target: ssh::Target) -> i32 {
+pub fn hop(target: ssh::Target, remote: String) -> i32 {
     if !ssh_can_pipe() {
         eprintln!(
             "deskpty: windows' ssh.exe does not read a pipe in a windows ssh login (session 0)"
         );
         return 255;
     }
-    let remote =
-        std::env::var("DESKPTY_REMOTE_COMMAND").unwrap_or_else(|_| ssh::REMOTE_COMMAND.into());
     let mut child = match Command::new("ssh")
         .args(ssh::argv(&target, &remote))
         .stdin(Stdio::piped())
@@ -145,7 +150,8 @@ fn ssh_can_pipe() -> bool {
     true
 }
 
-/// this same command, run by this user's server as `deskpty hop <host>`: this terminal stays its terminal
+/// this same command, run by this user's server as `deskpty hop <host>`: this terminal stays its terminal. the
+/// server's environment is not this one, so the remote command goes along as an argument
 fn from_desktop() -> i32 {
     let exe = match std::env::current_exe() {
         Ok(p) => p.to_string_lossy().into_owned(),
@@ -155,10 +161,15 @@ fn from_desktop() -> i32 {
         }
     };
     run(
-        [exe, HOP.to_string()]
-            .into_iter()
-            .chain(std::env::args().skip(1))
-            .collect(),
+        [
+            exe,
+            HOP.into(),
+            REMOTE_COMMAND_OPTION.into(),
+            remote_command(),
+        ]
+        .into_iter()
+        .chain(std::env::args().skip(1))
+        .collect(),
         false,
     )
 }
