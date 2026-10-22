@@ -40,9 +40,10 @@ host key prompt is answered before the terminal goes raw. A dropped connection e
 
 A host named `run`, `shell`, `status` or `proxy` is written `user@host`, or after `--`.
 
-On Windows, `deskpty <host>` refuses to run from inside an ssh login (session 0): Windows' `ssh.exe` never reads a
-pipe for its stdin there, so it would hang. From a terminal on the desktop it works, and so does nesting on Linux and
-macOS.
+On Windows, from inside an ssh login (session 0) `deskpty <host>` runs itself through the local `deskptyd`, as
+`deskpty run -- deskpty <host>` would: Windows' `ssh.exe` never reads a pipe for its stdin in session 0, and would hang.
+With no local server it refuses rather than hang. From a terminal on the desktop it runs directly, as it does nested on
+Linux and macOS.
 
 ## How it works
 
