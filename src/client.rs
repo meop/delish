@@ -15,6 +15,9 @@ use crate::term;
 
 const FALLBACK: Size = Size { rows: 24, cols: 80 };
 
+/// the subcommand the server is handed for `deskpty <host>`: ssh from where it runs, never handed on again
+pub const HOP: &str = "hop";
+
 /// how the frames ended: the command's code, or the connection's end before it
 enum End {
     Exit(i32),
@@ -55,10 +58,30 @@ pub fn run(argv: Vec<String>, login: bool) -> i32 {
 }
 
 /// the host's login shell, run by the host's server: interactive, or running the command. the cwd here means nothing
-/// there, so the command starts in the user's home, as an ssh login does
+/// there, so the command starts in the user's home, as an ssh login does. ssh always starts from the desktop session:
+/// through this user's own server when one is running, wherever this was typed, so the hop has that session's ssh
+/// agent, keys and PATH; without one, from here
 pub fn remote(target: ssh::Target) -> i32 {
-    if !ssh_can_pipe() {
+    if sock::connect().is_ok() {
         return from_desktop();
+    }
+    if !ssh_can_pipe() {
+        eprintln!(
+            "deskpty: deskpty <host> cannot run from a windows ssh login, where windows' ssh.exe does not read a pipe, and there is no deskptyd in this user's desktop session ({}) to run it from instead",
+            sock::path().display()
+        );
+        return 255;
+    }
+    hop(target)
+}
+
+/// ssh, from here: what the server runs for `remote`
+pub fn hop(target: ssh::Target) -> i32 {
+    if !ssh_can_pipe() {
+        eprintln!(
+            "deskpty: windows' ssh.exe does not read a pipe in a windows ssh login (session 0)"
+        );
+        return 255;
     }
     let remote =
         std::env::var("DESKPTY_REMOTE_COMMAND").unwrap_or_else(|_| ssh::REMOTE_COMMAND.into());
@@ -122,16 +145,8 @@ fn ssh_can_pipe() -> bool {
     true
 }
 
-/// so this same command runs from the desktop session instead, through its deskptyd, as `deskpty run -- deskpty
-/// <host>` would: this terminal stays its terminal. with no server there either it is refused, never left to hang
+/// this same command, run by this user's server as `deskpty hop <host>`: this terminal stays its terminal
 fn from_desktop() -> i32 {
-    if sock::connect().is_err() {
-        eprintln!(
-            "deskpty: deskpty <host> cannot run from a windows ssh login, where windows' ssh.exe does not read a pipe, and there is no deskptyd in this user's desktop session ({}) to run it from instead",
-            sock::path().display()
-        );
-        return 255;
-    }
     let exe = match std::env::current_exe() {
         Ok(p) => p.to_string_lossy().into_owned(),
         Err(e) => {
@@ -140,7 +155,8 @@ fn from_desktop() -> i32 {
         }
     };
     run(
-        std::iter::once(exe)
+        [exe, HOP.to_string()]
+            .into_iter()
             .chain(std::env::args().skip(1))
             .collect(),
         false,

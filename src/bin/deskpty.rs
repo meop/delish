@@ -44,6 +44,16 @@ fn main() {
             }
         },
         Some("proxy") => deskpty::proxy::run(),
+        Some(deskpty::client::HOP) => {
+            let rest: Vec<String> = args.collect();
+            match deskpty::ssh::parse(&rest) {
+                Some(target) => deskpty::client::hop(target),
+                None => {
+                    eprintln!("{USAGE}");
+                    2
+                }
+            }
+        }
         None | Some("-h" | "--help") => {
             eprintln!("{USAGE}");
             2

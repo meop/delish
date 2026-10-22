@@ -38,12 +38,14 @@ It runs `ssh -T <host> deskpty proxy`: `deskpty proxy` on the host joins ssh's s
 travels in the frames, not as a command line for the host's shell, so nothing in it is quoted twice. A password or
 host key prompt is answered before the terminal goes raw. A dropped connection ends the command, as with `ssh -t`.
 
-A host named `run`, `shell`, `status` or `proxy` is written `user@host`, or after `--`.
+A host named `run`, `shell`, `status`, `proxy` or `hop` is written `user@host`, or after `--`.
 
-On Windows, from inside an ssh login (session 0) `deskpty <host>` runs itself through the local `deskptyd`, as
-`deskpty run -- deskpty <host>` would: Windows' `ssh.exe` never reads a pipe for its stdin in session 0, and would hang.
-With no local server it refuses rather than hang. From a terminal on the desktop it runs directly, as it does nested on
-Linux and macOS.
+ssh always starts from the desktop session. When a local `deskptyd` is running, `deskpty <host>` hands itself to it,
+from a desktop terminal or from inside an ssh login, on every OS, and the server runs `deskpty hop <host>`, which calls
+ssh: the hop gets the desktop session's ssh agent, keys and PATH, and nested logins go as far as they like. With no
+local server, ssh runs from where it was typed, except in a Windows ssh login (session 0), where Windows' `ssh.exe`
+never reads a pipe for its stdin and would hang: there it refuses. An agent forwarded with `ssh -A` into a login is
+not the one the hop uses, when a local server is running.
 
 ## How it works
 
