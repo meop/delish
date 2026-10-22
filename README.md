@@ -49,6 +49,13 @@ not the one the hop uses, when a local server is running.
 
 ## How it works
 
+- `deskptyd` is one long-running process per user, started at login inside the desktop session; only a process
+  already there can start others with the session's env, display and token, and nothing from an ssh login can
+  start one later. It serves every connection at once, a thread for each, and never forks itself: each connection
+  gets a pty of its own and one child process on it, the command or the interactive login shell — to the server
+  they are the same, run until it exits. A session from another host reaches it through ssh and a `deskpty proxy`
+  of its own on that host, which joins ssh to the local socket. If `deskptyd` exits, every session it runs ends with
+  it, as a terminal's tabs do; run zellij or tmux inside a session that has to outlive a restart.
 - `deskptyd` listens on a unix socket at `~/.deskpty/deskptyd.sock` (`%USERPROFILE%` on Windows), in a directory only
   its user can open. `DESKPTY_SOCKET` moves it. It logs to `~/.deskpty/deskptyd.log`.
 - `deskpty run` sends the command, its cwd, its terminal size and `TERM`, then relays keys and resizes one way and
