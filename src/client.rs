@@ -57,6 +57,10 @@ pub fn run(argv: Vec<String>, login: bool) -> i32 {
 /// the host's login shell, run by the host's server: interactive, or running the command. the cwd here means nothing
 /// there, so the command starts in the user's home, as an ssh login does
 pub fn remote(target: ssh::Target) -> i32 {
+    if let Err(e) = ssh_can_pipe() {
+        eprintln!("deskpty: {e}");
+        return 255;
+    }
     let remote =
         std::env::var("DESKPTY_REMOTE_COMMAND").unwrap_or_else(|_| ssh::REMOTE_COMMAND.into());
     let mut child = match Command::new("ssh")
@@ -100,6 +104,32 @@ pub fn remote(target: ssh::Target) -> i32 {
             255
         }
     }
+}
+
+/// windows' ssh.exe never reads a pipe for its stdin in session 0, where a windows ssh login is (the same pipe works
+/// from the desktop): through it, the spawn would never arrive and the client would wait forever. so it is refused
+/// there, rather than hung. `deskpty run` and `shell` there are fine: they give ssh nothing
+#[cfg(windows)]
+fn ssh_can_pipe() -> io::Result<()> {
+    use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+
+    let mut session = 0u32;
+    if unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if session == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "deskpty <host> cannot run from a windows ssh login (session 0): windows' ssh.exe does not read a pipe there, and would hang. run it from a terminal on the desktop, or `deskpty run` it there",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn ssh_can_pipe() -> io::Result<()> {
+    Ok(())
 }
 
 fn spawn(argv: Vec<String>, login: bool, cwd: String) -> Spawn {
