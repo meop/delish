@@ -287,7 +287,7 @@ mod tests {
             env: vec![],
         };
         assert!(Spawn::decode(&shell(vec![]).encode()).is_ok());
-        assert!(Spawn::decode(&shell(vec!["wut p s".into()]).encode()).is_ok());
+        assert!(Spawn::decode(&shell(vec!["git status".into()]).encode()).is_ok());
         assert!(Spawn::decode(&shell(vec!["a".into(), "b".into()]).encode()).is_err());
     }
 }

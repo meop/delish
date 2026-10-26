@@ -88,9 +88,8 @@ mod tests {
             "-vJ",
             "jump",
             "u@glass",
-            "wut",
-            "p",
-            "s",
+            "git",
+            "status",
         ]))
         .unwrap();
         assert_eq!(
@@ -98,7 +97,7 @@ mod tests {
             args(&["-p", "2222", "-A", "-oBatchMode=yes", "-vJ", "jump"])
         );
         assert_eq!(t.host, "u@glass");
-        assert_eq!(t.command.as_deref(), Some("wut p s"));
+        assert_eq!(t.command.as_deref(), Some("git status"));
         assert_eq!(
             argv(&t, REMOTE_COMMAND),
             args(&[

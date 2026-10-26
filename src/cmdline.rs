@@ -140,11 +140,11 @@ mod tests {
         let a = argv(&[
             r"C:\ProgramData\ssh\shell.bat",
             "-c",
-            r#"Get-Command wut | Select "Name"; exit 6"#,
+            r#"Get-Command git | Select "Name"; exit 6"#,
         ]);
         assert_eq!(
             command_line(&a).unwrap(),
-            r#"cmd.exe /e:ON /v:OFF /d /c ""C:\ProgramData\ssh\shell.bat" -c "Get-Command wut | Select ""Name""; exit 6"""#
+            r#"cmd.exe /e:ON /v:OFF /d /c ""C:\ProgramData\ssh\shell.bat" -c "Get-Command git | Select ""Name""; exit 6"""#
         );
     }
 

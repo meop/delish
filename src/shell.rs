@@ -122,8 +122,8 @@ mod tests {
     fn a_unix_login_shell_takes_l_and_a_command_after_c() {
         assert_eq!(unix_argv("/bin/zsh", None), ["/bin/zsh", "-l"]);
         assert_eq!(
-            unix_argv("/bin/zsh", Some("wut p s")),
-            ["/bin/zsh", "-l", "-c", "wut p s"]
+            unix_argv("/bin/zsh", Some("git status")),
+            ["/bin/zsh", "-l", "-c", "git status"]
         );
     }
 
@@ -132,8 +132,8 @@ mod tests {
         let bat = r"C:\ProgramData\ssh\shell.bat";
         assert_eq!(windows_argv(bat, "-c", None), [bat]);
         assert_eq!(
-            windows_argv(bat, "-c", Some("wut p s")),
-            [bat, "-c", "wut p s"]
+            windows_argv(bat, "-c", Some("git status")),
+            [bat, "-c", "git status"]
         );
     }
 }
