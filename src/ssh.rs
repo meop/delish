@@ -1,12 +1,12 @@
-//! `deskpty <host>`: ssh to the host and run `deskpty proxy` there, which joins ssh's stdin and stdout to the host's
-//! `deskptyd`, so the client speaks to that server as it does to its own. ssh only carries the frames: it is run
+//! `delish <host>`: ssh to the host and run `delish proxy` there, which joins ssh's stdin and stdout to the host's
+//! `delishd`, so the client speaks to that server as it does to its own. ssh only carries the frames: it is run
 //! without a tty, and the command travels in the spawn frame rather than in a command line for the host's shell.
 
 /// ssh's options that take a value (ssh(1)): the host is the first word that is neither an option nor one's value
 const WITH_VALUE: &str = "BbcDEeFIiJLlmOoPpQRSWw";
 
-/// what to run on the host, unless DESKPTY_REMOTE_COMMAND says otherwise
-pub const REMOTE_COMMAND: &str = "deskpty proxy";
+/// what to run on the host, unless DELISH_REMOTE_COMMAND says otherwise
+pub const REMOTE_COMMAND: &str = "delish proxy";
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Target {
@@ -110,7 +110,7 @@ mod tests {
                 "-T",
                 "--",
                 "u@glass",
-                "deskpty proxy"
+                "delish proxy"
             ])
         );
     }

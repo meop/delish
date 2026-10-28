@@ -1,7 +1,7 @@
-//! The wire format between `deskpty` and `deskptyd`: frames of a kind byte, a little-endian u32 length, then the
+//! The wire format between `delish` and `delishd`: frames of a kind byte, a little-endian u32 length, then the
 //! payload. One connection runs one command. The server's first frame is a HELLO and the client's a SPAWN, each
 //! starting with the protocol they speak, so a client and a server that differ say so rather than misread each other.
-//! READY and ERROR from `deskpty proxy` come before any of it, and keep their shape in every protocol.
+//! READY and ERROR from `delish proxy` come before any of it, and keep their shape in every protocol.
 
 use std::io::{self, Read, Write};
 
@@ -17,7 +17,7 @@ pub const OUTPUT: u8 = 10;
 pub const EXIT: u8 = 11;
 /// server → client: why the command could not be run, last
 pub const ERROR: u8 = 12;
-/// proxy → client, before the server's frames: `deskpty proxy` on the host has reached its server
+/// proxy → client, before the server's frames: `delish proxy` on the host has reached its server
 pub const READY: u8 = 13;
 /// server → client, first: the protocol it speaks and its version
 pub const HELLO: u8 = 14;
@@ -152,7 +152,7 @@ impl Spawn {
                 format!("the client protocol {protocol}")
             };
             return Err(bad(&format!(
-                "this deskptyd is {VERSION} and speaks protocol {PROTOCOL}, {client}: update deskpty on both machines, then restart deskptyd"
+                "this delishd is {VERSION} and speaks protocol {PROTOCOL}, {client}: update delish on both machines, then restart delishd"
             )));
         }
         let size = Size::decode(&b[at..])?;

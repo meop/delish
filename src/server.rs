@@ -1,4 +1,4 @@
-//! `deskptyd`: started inside the desktop session, it runs each command a client sends on a pty of its own, so the
+//! `delishd`: started inside the desktop session, it runs each command a client sends on a pty of its own, so the
 //! command has the session's context — its env, its window server, its token — whoever asked for it.
 
 use std::io::{self, Read, Write};
@@ -13,9 +13,9 @@ use crate::pty;
 use crate::shell;
 use crate::sock::{self, Stream};
 
-/// a line in ~/.deskpty/deskptyd.log: the server has no terminal to say it on
+/// a line in ~/.delish/delishd.log: the server has no terminal to say it on
 pub fn log(msg: &str) {
-    let path = sock::dir().join("deskptyd.log");
+    let path = sock::dir().join("delishd.log");
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -62,7 +62,7 @@ fn handle(mut stream: Stream) -> io::Result<()> {
                 return proto::write_frame(&mut stream, proto::ERROR, e.to_string().as_bytes());
             }
         },
-        // `deskpty status` connects and goes: nothing to run, and nothing wrong
+        // `delish status` connects and goes: nothing to run, and nothing wrong
         None => return Ok(()),
         Some(_) => {
             return Err(io::Error::new(
@@ -162,7 +162,7 @@ fn session_check() -> io::Result<()> {
     if unsafe { libc::geteuid() } == 0 {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "deskptyd runs as root: start it as the user, in the desktop session",
+            "delishd runs as root: start it as the user, in the desktop session",
         ));
     }
     Ok(())
@@ -186,7 +186,7 @@ fn session_check() -> io::Result<()> {
     if session == 0 {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "deskptyd is in session 0, not a desktop session: start it from the desktop, as a scheduled task that runs only when the user is logged on",
+            "delishd is in session 0, not a desktop session: start it from the desktop, as a scheduled task that runs only when the user is logged on",
         ));
     }
     let mut token: HANDLE = std::ptr::null_mut();
@@ -211,7 +211,7 @@ fn session_check() -> io::Result<()> {
     if elevation.TokenIsElevated != 0 {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "deskptyd is elevated: start it with the user's own rights, not as administrator",
+            "delishd is elevated: start it with the user's own rights, not as administrator",
         ));
     }
     Ok(())

@@ -59,22 +59,22 @@ the `GPG_PRIVATE_KEY` and `GPG_PASSPHRASE` repository secrets. Never create the 
 | `src/cmdline.rs`  | a Windows command line from argv: the C runtime's quoting, or std's for a batch file through `cmd.exe`; plain strings, tested everywhere |
 | `src/shell.rs`    | the login shell: the account's with `-l` on unix, OpenSSH's `DefaultShell` on Windows    |
 | `src/term.rs`     | the client's terminal: size, and raw mode while a command runs                             |
-| `src/server.rs`   | `deskptyd`: one thread per connection, the command's output out, its exit code last; refuses to start elevated, as root, or in session 0 |
-| `src/client.rs`   | `deskpty run`, `shell`, `<host>` and `hop`: keys and resizes in, output out, the command's exit code as its own; to the local socket, or to ssh's stdin and stdout. `<host>` with a local server running hands itself to it as `deskpty hop --remote-command <cmd> <ssh args>`, which calls ssh; without one it calls ssh itself, except in a Windows ssh login (session 0), where it refuses |
-| `src/ssh.rs`      | `deskpty <host>`: ssh's options and the host from the arguments, and the `ssh -T` command line |
-| `src/proxy.rs`    | `deskpty proxy`: on the host, ssh's stdin and stdout joined to the local server, after a `READY` or `ERROR` |
+| `src/server.rs`   | `delishd`: one thread per connection, the command's output out, its exit code last; refuses to start elevated, as root, or in session 0 |
+| `src/client.rs`   | `delish run`, `shell`, `<host>` and `hop`: keys and resizes in, output out, the command's exit code as its own; to the local socket, or to ssh's stdin and stdout. `<host>` with a local server running hands itself to it as `delish hop --remote-command <cmd> <ssh args>`, which calls ssh; without one it calls ssh itself, except in a Windows ssh login (session 0), where it refuses |
+| `src/ssh.rs`      | `delish <host>`: ssh's options and the host from the arguments, and the `ssh -T` command line |
+| `src/proxy.rs`    | `delish proxy`: on the host, ssh's stdin and stdout joined to the local server, after a `READY` or `ERROR` |
 
 ## Conventions
 
-- Two binaries in one crate, both released on every platform: `deskpty` and `deskptyd`
+- Two binaries in one crate, both released on every platform: `delish` and `delishd`
 - Version is in `Cargo.toml`; CI creates a signed tag on version bump
 - No async runtime: a few threads per connection, blocking I/O.
-- One `deskptyd` process holds every session: a thread per connection, a pty and one child per session, never a
+- One `delishd` process holds every session: a thread per connection, a pty and one child per session, never a
   fork of the server. Its exit ends them all; a helper process per session was judged not worth it.
 - ssh always starts from the desktop session when a local server runs (`hop`): the hop runs with the server's
-  environment, not the caller's, so anything it needs from the caller (`DESKPTY_REMOTE_COMMAND`) goes as an argument.
+  environment, not the caller's, so anything it needs from the caller (`DELISH_REMOTE_COMMAND`) goes as an argument.
 - Never hang: whatever cannot work (no server, Windows' `ssh.exe` in session 0) refuses at once with why.
 - Dependencies stay few: `libc` on unix, `windows-sys` and `uds_windows` on Windows.
 - Through ssh the command goes in the spawn frame, never in ssh's command line: the host's shell only ever runs
-  `deskpty proxy`.
+  `delish proxy`.
 - A command is never killed once it has been waited on: its pid may be another process's by then.

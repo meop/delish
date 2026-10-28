@@ -1,18 +1,18 @@
 [package]
-name = "deskpty"
-version = "0.1.0"
+name = "delish"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 
 [lib]
 
 [[bin]]
-name = "deskpty"
-path = "src/bin/deskpty.rs"
+name = "delish"
+path = "src/bin/delish.rs"
 
 [[bin]]
-name = "deskptyd"
-path = "src/bin/deskptyd.rs"
+name = "delishd"
+path = "src/bin/delishd.rs"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.191"

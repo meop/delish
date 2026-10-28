@@ -1,5 +1,5 @@
-//! `deskpty proxy`: what `deskpty <host>` runs on the host over ssh. It joins its stdin and stdout to the user's
-//! `deskptyd` byte for byte, after one frame of its own: READY once it has the server, or ERROR when there is none.
+//! `delish proxy`: what `delish <host>` runs on the host over ssh. It joins its stdin and stdout to the user's
+//! `delishd` byte for byte, after one frame of its own: READY once it has the server, or ERROR when there is none.
 
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
@@ -14,7 +14,7 @@ pub fn run() -> i32 {
         Ok(s) => s,
         Err(e) => {
             let msg = format!(
-                "no deskptyd in this user's desktop session ({}): {e}",
+                "no delishd in this user's desktop session ({}): {e}",
                 sock::path().display()
             );
             let _ = proto::write_frame(&mut stdout, proto::ERROR, msg.as_bytes());

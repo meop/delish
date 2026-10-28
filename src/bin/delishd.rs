@@ -2,9 +2,9 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 fn main() {
-    if let Err(e) = deskpty::server::serve() {
-        deskpty::server::log(&format!("serve: {e}"));
-        eprintln!("deskptyd: {e}");
+    if let Err(e) = delish::server::serve() {
+        delish::server::log(&format!("serve: {e}"));
+        eprintln!("delishd: {e}");
         std::process::exit(1);
     }
 }

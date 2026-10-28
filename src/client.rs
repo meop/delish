@@ -1,6 +1,6 @@
-//! `deskpty run`, `shell` and `<host>`: asks a `deskptyd` to run a command in its desktop session, and is that
+//! `delish run`, `shell` and `<host>`: asks a `delishd` to run a command in its desktop session, and is that
 //! command's terminal here — keys and resizes go there, its output comes back, and its exit code is this one's. The
-//! server is this user's own, on its socket, or a host's, through ssh and `deskpty proxy` there.
+//! server is this user's own, on its socket, or a host's, through ssh and `delish proxy` there.
 
 use std::io::{self, Read, Write};
 use std::process::{Command, Stdio};
@@ -15,9 +15,9 @@ use crate::term;
 
 const FALLBACK: Size = Size { rows: 24, cols: 80 };
 
-/// the subcommand the server is handed for `deskpty <host>`: ssh from where it runs, never handed on again
+/// the subcommand the server is handed for `delish <host>`: ssh from where it runs, never handed on again
 pub const HOP: &str = "hop";
-/// `deskpty hop`'s first option: the remote command, as `deskpty <host>` found it
+/// `delish hop`'s first option: the remote command, as `delish <host>` found it
 pub const REMOTE_COMMAND_OPTION: &str = "--remote-command";
 
 /// how the frames ended: the command's code, or the connection's end before it, or before the server's hello
@@ -30,7 +30,7 @@ enum End {
 /// what a server older than the hello does with this protocol's spawn: it cannot read it, and hangs up
 fn older_server(who: &str) -> i32 {
     eprintln!(
-        "deskpty: {who}deskptyd hung up without saying its version, so it is older than this deskpty {}: update deskpty there, then restart deskptyd",
+        "delish: {who}delishd hung up without saying its version, so it is older than this delish {}: update delish there, then restart delishd",
         proto::VERSION
     );
     255
@@ -44,7 +44,7 @@ pub fn run(argv: Vec<String>, login: bool) -> i32 {
         Ok(s) => s,
         Err(e) => {
             eprintln!(
-                "deskpty: no deskptyd in this user's desktop session ({}): {e}",
+                "delish: no delishd in this user's desktop session ({}): {e}",
                 sock::path().display()
             );
             return 255;
@@ -59,25 +59,25 @@ pub fn run(argv: Vec<String>, login: bool) -> i32 {
     match ended {
         Ok(End::Exit(code)) => code,
         Ok(End::Closed) => {
-            eprintln!("deskpty: deskptyd closed the connection before the command exited");
+            eprintln!("delish: delishd closed the connection before the command exited");
             255
         }
         Ok(End::NoHello) => older_server(""),
         Err(e) => {
-            eprintln!("deskpty: {e}");
+            eprintln!("delish: {e}");
             255
         }
     }
 }
 
-/// whether this user's server is listening, and is this deskpty's version: 0 when it is, 1 with no server, 3 with
+/// whether this user's server is listening, and is this delish's version: 0 when it is, 1 with no server, 3 with
 /// another version, so a script can tell that a restart is due
 pub fn status() -> i32 {
     let path = sock::path();
     let mut stream = match sock::connect() {
         Ok(s) => s,
         Err(e) => {
-            println!("no deskptyd on {}: {e}", path.display());
+            println!("no delishd on {}: {e}", path.display());
             return 1;
         }
     };
@@ -89,12 +89,12 @@ pub fn status() -> i32 {
     };
     match hello {
         Some(h) if h.version == proto::VERSION => {
-            println!("deskptyd {} is listening on {}", h.version, path.display());
+            println!("delishd {} is listening on {}", h.version, path.display());
             0
         }
         Some(h) => {
             println!(
-                "deskptyd {} is listening on {}, and this deskpty is {}: restart deskptyd to run this one",
+                "delishd {} is listening on {}, and this delish is {}: restart delishd to run this one",
                 h.version,
                 path.display(),
                 proto::VERSION
@@ -103,7 +103,7 @@ pub fn status() -> i32 {
         }
         None => {
             println!(
-                "a deskptyd older than this deskpty {} is listening on {}: restart deskptyd to run this one",
+                "a delishd older than this delish {} is listening on {}: restart delishd to run this one",
                 proto::VERSION,
                 path.display()
             );
@@ -122,7 +122,7 @@ pub fn remote(target: ssh::Target) -> i32 {
     }
     if !ssh_can_pipe() {
         eprintln!(
-            "deskpty: deskpty <host> cannot run from a windows ssh login, where windows' ssh.exe does not read a pipe, and there is no deskptyd in this user's desktop session ({}) to run it from instead",
+            "delish: delish <host> cannot run from a windows ssh login, where windows' ssh.exe does not read a pipe, and there is no delishd in this user's desktop session ({}) to run it from instead",
             sock::path().display()
         );
         return 255;
@@ -130,16 +130,16 @@ pub fn remote(target: ssh::Target) -> i32 {
     hop(target, remote_command())
 }
 
-/// what runs on the host: read where `deskpty <host>` was typed, and handed to the server with the rest
+/// what runs on the host: read where `delish <host>` was typed, and handed to the server with the rest
 pub fn remote_command() -> String {
-    std::env::var("DESKPTY_REMOTE_COMMAND").unwrap_or_else(|_| ssh::REMOTE_COMMAND.into())
+    std::env::var("DELISH_REMOTE_COMMAND").unwrap_or_else(|_| ssh::REMOTE_COMMAND.into())
 }
 
 /// ssh, from here: what the server runs for `remote`
 pub fn hop(target: ssh::Target, remote: String) -> i32 {
     if !ssh_can_pipe() {
         eprintln!(
-            "deskpty: windows' ssh.exe does not read a pipe in a windows ssh login (session 0)"
+            "delish: windows' ssh.exe does not read a pipe in a windows ssh login (session 0)"
         );
         return 255;
     }
@@ -151,7 +151,7 @@ pub fn hop(target: ssh::Target, remote: String) -> i32 {
     {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("deskpty: could not run ssh: {e}");
+            eprintln!("delish: could not run ssh: {e}");
             return 255;
         }
     };
@@ -169,13 +169,13 @@ pub fn hop(target: ssh::Target, remote: String) -> i32 {
         Ok(End::NoHello) => older_server(&who),
         Ok(End::Closed) => {
             eprintln!(
-                "deskpty: the connection to {} closed before the command exited",
+                "delish: the connection to {} closed before the command exited",
                 target.host
             );
             255
         }
         Err(e) => {
-            eprintln!("deskpty: {e}");
+            eprintln!("delish: {e}");
             255
         }
     }
@@ -198,13 +198,13 @@ fn ssh_can_pipe() -> bool {
     true
 }
 
-/// this same command, run by this user's server as `deskpty hop <host>`: this terminal stays its terminal. the
+/// this same command, run by this user's server as `delish hop <host>`: this terminal stays its terminal. the
 /// server's environment is not this one, so the remote command goes along as an argument
 fn from_desktop() -> i32 {
     let exe = match std::env::current_exe() {
         Ok(p) => p.to_string_lossy().into_owned(),
         Err(e) => {
-            eprintln!("deskpty: {e}");
+            eprintln!("delish: {e}");
             return 255;
         }
     };
@@ -259,7 +259,7 @@ fn relay(
                 let hello = Hello::decode(&payload)?;
                 if hello.protocol != proto::PROTOCOL {
                     eprintln!(
-                        "deskpty: {who}deskptyd is {} and speaks protocol {}, this deskpty {} protocol {}: update deskpty on both machines, then restart deskptyd",
+                        "delish: {who}delishd is {} and speaks protocol {}, this delish {} protocol {}: update delish on both machines, then restart delishd",
                         hello.version,
                         hello.protocol,
                         proto::VERSION,
@@ -272,13 +272,13 @@ fn relay(
             }
             Some((proto::ERROR, msg)) => {
                 drop(raw.take());
-                eprintln!("deskpty: {who}{}", String::from_utf8_lossy(&msg));
+                eprintln!("delish: {who}{}", String::from_utf8_lossy(&msg));
                 break End::Exit(255);
             }
             // a server older than the hello runs the command and answers with its output
             Some(_) if !started => {
                 eprintln!(
-                    "deskpty: {who}deskptyd is older than this deskpty {} and says no version: update deskpty there, then restart deskptyd",
+                    "delish: {who}delishd is older than this delish {} and says no version: update delish there, then restart delishd",
                     proto::VERSION
                 );
                 break End::Exit(255);

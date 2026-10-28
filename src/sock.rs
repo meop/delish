@@ -1,4 +1,4 @@
-//! Where `deskptyd` listens: a unix socket in a directory only its user can open. The path is the same from the
+//! Where `delishd` listens: a unix socket in a directory only its user can open. The path is the same from the
 //! desktop session and from an ssh login, since both are the user's home. Windows has unix sockets too (10 1803+), as
 //! a file in the filesystem, so its access is the profile dir's: the user's own.
 
@@ -18,14 +18,14 @@ pub fn home() -> PathBuf {
 }
 
 pub fn dir() -> PathBuf {
-    home().join(".deskpty")
+    home().join(".delish")
 }
 
-/// DESKPTY_SOCKET moves it, for a second server or a test
+/// DELISH_SOCKET moves it, for a second server or a test
 pub fn path() -> PathBuf {
-    std::env::var_os("DESKPTY_SOCKET")
+    std::env::var_os("DELISH_SOCKET")
         .map(PathBuf::from)
-        .unwrap_or_else(|| dir().join("deskptyd.sock"))
+        .unwrap_or_else(|| dir().join("delishd.sock"))
 }
 
 pub fn connect() -> io::Result<Stream> {
@@ -46,7 +46,7 @@ pub fn listen() -> io::Result<Listener> {
     if Stream::connect(&path).is_ok() {
         return Err(io::Error::new(
             io::ErrorKind::AddrInUse,
-            format!("a deskptyd already listens on {}", path.display()),
+            format!("a delishd already listens on {}", path.display()),
         ));
     }
     let _ = std::fs::remove_file(&path);

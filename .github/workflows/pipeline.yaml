@@ -108,10 +108,10 @@ jobs:
         shell: bash
         run: |
           VERSION=${{ needs.version.outputs.new_version }}
-          ARTIFACT=deskpty-$VERSION-${{ matrix.artifact }}
+          ARTIFACT=delish-$VERSION-${{ matrix.artifact }}
           mkdir -p dist/$ARTIFACT
-          cp target/${{ matrix.target }}/release/deskpty dist/$ARTIFACT/
-          cp target/${{ matrix.target }}/release/deskptyd dist/$ARTIFACT/
+          cp target/${{ matrix.target }}/release/delish dist/$ARTIFACT/
+          cp target/${{ matrix.target }}/release/delishd dist/$ARTIFACT/
           cp LICENSE dist/$ARTIFACT/
           tar -czf dist/$ARTIFACT.tar.gz -C dist $ARTIFACT
       - name: Package (Windows)
@@ -119,17 +119,17 @@ jobs:
         shell: pwsh
         run: |
           $VERSION = "${{ needs.version.outputs.new_version }}"
-          $ARTIFACT = "deskpty-$VERSION-${{ matrix.artifact }}"
+          $ARTIFACT = "delish-$VERSION-${{ matrix.artifact }}"
           New-Item -ItemType Directory -Path "dist/$ARTIFACT" -Force | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/deskpty.exe" "dist/$ARTIFACT/"
-          Copy-Item "target/${{ matrix.target }}/release/deskptyd.exe" "dist/$ARTIFACT/"
+          Copy-Item "target/${{ matrix.target }}/release/delish.exe" "dist/$ARTIFACT/"
+          Copy-Item "target/${{ matrix.target }}/release/delishd.exe" "dist/$ARTIFACT/"
           Copy-Item "LICENSE" "dist/$ARTIFACT/"
           Compress-Archive -Path "dist/$ARTIFACT" -DestinationPath "dist/$ARTIFACT.zip"
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: deskpty-${{ needs.version.outputs.new_version }}-${{ matrix.artifact }}
-          path: dist/deskpty-${{ needs.version.outputs.new_version }}-${{ matrix.artifact }}.*
+          name: delish-${{ needs.version.outputs.new_version }}-${{ matrix.artifact }}
+          path: dist/delish-${{ needs.version.outputs.new_version }}-${{ matrix.artifact }}.*
           if-no-files-found: error
 
   publish:

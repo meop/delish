@@ -1,9 +1,9 @@
-const USAGE: &str = "usage: deskpty [ssh options] <host> [command]
-       deskpty run [--] <command> [args...]
-       deskpty shell [-c <command>]
-       deskpty status
-       deskpty --version
-       deskpty proxy";
+const USAGE: &str = "usage: delish [ssh options] <host> [command]
+       delish run [--] <command> [args...]
+       delish shell [-c <command>]
+       delish status
+       delish --version
+       delish proxy";
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -17,38 +17,38 @@ fn main() {
                 eprintln!("{USAGE}");
                 2
             } else {
-                deskpty::client::run(argv, false)
+                delish::client::run(argv, false)
             }
         }
         Some("shell") => {
             let rest: Vec<String> = args.collect();
             match rest.as_slice() {
-                [] => deskpty::client::run(vec![], true),
-                [c, cmd] if c == "-c" => deskpty::client::run(vec![cmd.clone()], true),
+                [] => delish::client::run(vec![], true),
+                [c, cmd] if c == "-c" => delish::client::run(vec![cmd.clone()], true),
                 _ => {
                     eprintln!("{USAGE}");
                     2
                 }
             }
         }
-        Some("status") => deskpty::client::status(),
+        Some("status") => delish::client::status(),
         Some("-V" | "--version") => {
-            println!("deskpty {}", deskpty::proto::VERSION);
+            println!("delish {}", delish::proto::VERSION);
             0
         }
-        Some("proxy") => deskpty::proxy::run(),
-        Some(deskpty::client::HOP) => {
+        Some("proxy") => delish::proxy::run(),
+        Some(delish::client::HOP) => {
             let mut rest: Vec<String> = args.collect();
             let remote = if rest.first().map(String::as_str)
-                == Some(deskpty::client::REMOTE_COMMAND_OPTION)
+                == Some(delish::client::REMOTE_COMMAND_OPTION)
                 && rest.len() > 1
             {
                 rest.drain(..2).nth(1).unwrap_or_default()
             } else {
-                deskpty::client::remote_command()
+                delish::client::remote_command()
             };
-            match deskpty::ssh::parse(&rest) {
-                Some(target) => deskpty::client::hop(target, remote),
+            match delish::ssh::parse(&rest) {
+                Some(target) => delish::client::hop(target, remote),
                 None => {
                     eprintln!("{USAGE}");
                     2
@@ -62,8 +62,8 @@ fn main() {
         // anything else is ssh's: a host, after its options
         Some(first) => {
             let all: Vec<String> = std::iter::once(first.to_string()).chain(args).collect();
-            match deskpty::ssh::parse(&all) {
-                Some(target) => deskpty::client::remote(target),
+            match delish::ssh::parse(&all) {
+                Some(target) => delish::client::remote(target),
                 None => {
                     eprintln!("{USAGE}");
                     2
