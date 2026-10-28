@@ -14,6 +14,11 @@ cargo clippy --all-targets -- -D warnings
 The Windows code is checked from Linux or macOS with `--target x86_64-pc-windows-msvc` on `cargo check` and
 `cargo clippy`; linking it needs a Windows linker.
 
+## Comments
+
+No comment explains why code does what it does where a unit test can show it: the test is the explanation, and it
+fails when the reasoning stops holding. A comment is only for what no test can show.
+
 ## Keeping this file current
 
 Update this file whenever a binary or source file is added, removed or renamed, the wire format changes, or a
