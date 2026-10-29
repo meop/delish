@@ -181,7 +181,23 @@ fn a_background_job_holding_the_terminal_neither_keeps_the_session_nor_survives_
 #[test]
 fn with_stdout_redirected_the_terminals_bytes_go_to_the_clients_stderr() {
     let s = server("redirected");
-    let (master, slave) = terminal();
+    let (mut master, slave) = terminal();
+    // read while the client runs: macOS drops what a pty holds once its last user closes it
+    let seen = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut seen = Vec::new();
+        let mut buf = [0u8; 64];
+        while let Ok(n) = master.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            seen.extend_from_slice(&buf[..n]);
+            if String::from_utf8_lossy(&seen).contains("err") {
+                break;
+            }
+        }
+        seen
+    });
     let (out, _) = run(
         &s,
         None,
@@ -189,12 +205,8 @@ fn with_stdout_redirected_the_terminals_bytes_go_to_the_clients_stderr() {
         &["sh", "-c", "echo out; echo err >&2"],
     );
     assert_eq!(out.stdout, b"out\n");
-    let mut seen = vec![0u8; 64];
-    let mut master = master;
-    use std::io::Read;
-    let n = master.read(&mut seen).unwrap();
     assert!(
-        String::from_utf8_lossy(&seen[..n]).contains("err"),
+        String::from_utf8_lossy(&seen.join().unwrap()).contains("err"),
         "stderr did not reach the client's terminal"
     );
 }
