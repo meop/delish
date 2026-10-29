@@ -89,6 +89,8 @@ not the one the hop uses, when a local server is running.
 
 - On Windows, ConPTY writes its own terminal setup sequences (a screen clear, the window title, mouse and focus
   modes) to the console: they reach the client's terminal, never a stream it redirected.
+- In a Windows ssh login, OpenSSH's own tools (`ssh`, `ssh-keygen`) can lose their output, as rustup's proxies fail to
+  start: run them with `delish shell -c`, in the desktop session.
 - PowerShell's `-c` exits 1 for any native command that failed, whatever its code: end a remote PowerShell command
   with `; exit $LASTEXITCODE` to pass the code through a Windows host.
 - On macOS, `delishd` runs in the Aqua session, where privacy permissions apply to it: macOS asks once for Local
@@ -107,6 +109,12 @@ display and token. Stopping it leaves programs a session started and left runnin
 | Windows | a scheduled task at logon, interactive, `RunLevel` limited, no time limit (`Register-ScheduledTask`)          | `Stop-Process -Name delishd`, `Start-ScheduledTask` |
 
 An upgrade replaces the binary, not the server already running; until it is restarted, `delish status` exits 3.
+
+To roll a new version out: install it on each machine, by whatever put delish there, then restart its server with the
+command above; `delish status` says which still run an older one. A restart ends every session the server runs, the
+one it was typed in too, so have the service manager do it (`systemctl`, `launchctl kickstart`, a process started
+apart from the session on Windows), which finishes the restart even when the session that asked for it ends. A client
+and a server on different protocols stop at once and say which to update.
 
 ## Building
 

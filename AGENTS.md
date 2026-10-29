@@ -70,6 +70,13 @@ the `GPG_PRIVATE_KEY` and `GPG_PASSPHRASE` repository secrets. Never create the 
 | `tests/unix.rs`  | end to end against a real `delishd`: piped stdin's end, byte-exact output, stderr apart, no pty without a terminal, the exit code, a background job |
 | `src/proxy.rs`    | `delish proxy`: on the host, ssh's stdin and stdout joined to the local server, after a `READY` or `ERROR` |
 
+## Testing on a real host
+
+CI runs the tests on Linux, macOS and Windows. On a Windows machine of your own, run `cargo test` in its desktop
+session, not an ssh login: rustup's `cargo` and `rustc` proxies cannot start in an ssh login (os error 448), which
+`delish shell -c` gets around. A test that reads a pty reads it while the command runs: macOS drops what a pty holds
+once its last user closes it.
+
 ## Conventions
 
 - Two binaries in one crate, both released on every platform: `delish` and `delishd`
