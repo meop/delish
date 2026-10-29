@@ -57,17 +57,22 @@ the `GPG_PRIVATE_KEY` and `GPG_PASSPHRASE` repository secrets. Never create the 
 
 | file              | what it is                                                                                 |
 | ----------------- | ------------------------------------------------------------------------------------------ |
-| `src/proto.rs`    | the wire format: frames of kind byte + u32 LE length + payload; one connection, one command. the server's first frame is `HELLO` (protocol, version) and the client's `SPAWN`, which starts with the protocol: size, login flag, whether each of the client's stdin, stdout and stderr is a terminal, cwd, argv, env; then `INPUT`, `RESIZE` and, for a stdin that is not a terminal, `EOF`; from the server, `OUTPUT` (the terminal, or stdout) and `STDERR` (stderr, when it is not the terminal). `PROTOCOL` goes up with any change to a frame or payload. `READY` and `ERROR` from the proxy come before any of it and never change shape |
+| `src/proto.rs`    | the wire format: frames of kind byte + u32 LE length + payload; one connection, one command. the server's first frame is `HELLO` (protocol, version) and the client's `SPAWN`, which starts with the protocol: size, login flag, whether each of the client's stdin, stdout and stderr is a terminal, cwd, argv, env; then `INPUT`, `RESIZE` and, for a stdin that is not a terminal, `EOF`. Instead of a `SPAWN`, a client's `REMOTE` asks for a session on another host, and another server's `LINK` opens a link (`mux`); from the server, `OUTPUT` (the terminal, or stdout) and `STDERR` (stderr, when it is not the terminal). `PROTOCOL` goes up with any change to a frame or payload. `READY` and `ERROR` from the proxy come before any of it and never change shape |
 | `src/sock.rs`     | the socket path and its permissions; `std` unix sockets, `uds_windows` on Windows          |
 | `src/pty/unix.rs` | `openpty` for the streams the client has a terminal for and none without, the child in its own session with the pty as its controlling terminal; a pipe for each other stream; readers that a stop ends |
 | `src/pty/windows.rs` | ConPTY from kernel32 (the console's own; nothing side-loaded) for the streams the client has a terminal for, a hidden console without; a pipe for each other stream |
 | `src/cmdline.rs`  | a Windows command line from argv: the C runtime's quoting, or std's for a batch file through `cmd.exe`; plain strings, tested everywhere |
 | `src/shell.rs`    | the login shell: the account's with `-l` on unix, OpenSSH's `DefaultShell` on Windows    |
 | `src/term.rs`     | the client's terminal: size, and raw mode while a command runs                             |
-| `src/server.rs`   | `delishd`: one thread per connection, the command's outputs out, its exit code last, the terminal closed after it; the log, with programs and no arguments, rotated; refuses to start elevated, as root, or in session 0 |
-| `src/client.rs`   | `delish run`, `shell`, `<host>` and `hop`: keys and resizes in, output out, the command's exit code as its own; to the local socket, or to ssh's stdin and stdout. `<host>` with a local server running hands itself to it as `delish hop --remote-command <cmd> <ssh args>`, which calls ssh; without one it calls ssh itself, except in a Windows ssh login (session 0), where it refuses |
+| `src/server.rs`   | `delishd`: one thread per connection, whose first frame says what it is: a client's `SPAWN` (its session), its `REMOTE` (to `link`), another server's `LINK` (to `hosted`); the log, with programs and no arguments, rotated; refuses to start elevated, as root, or in session 0 |
+| `src/client.rs`  | `delish run`, `shell` and `<host>`: keys and resizes in, output out, the command's exit code as its own. `<host>` with a local server running asks it for the session (`REMOTE`); without one it calls ssh itself, except in a Windows ssh login (session 0), where it refuses |
 | `src/ssh.rs`      | `delish <host>`: ssh's options and the host from the arguments, and the `ssh -T` command line |
 | `tests/unix.rs`  | end to end against a real `delishd`: piped stdin's end, byte-exact output, stderr apart, no pty without a terminal, the exit code, a background job |
+| `src/session.rs` | one command on its terminal, its frames to a sink: the server's own connection, or a link |
+| `src/mux.rs`     | a link's frames, and the outbox and inbox that number each direction of a session by offset, keep what was sent until acknowledged, pause a sender at its cap, and resend after a drop |
+| `src/link.rs`    | this server's links to other hosts: one ssh per target, its sessions, reconnecting with backoff, heartbeats, the idle close and the grace |
+| `src/hosted.rs`  | the sessions a server runs for links: detached, not ended, when a link drops, until a link attaches them or their grace runs out |
+| `tests/link.rs`  | two servers on one machine and a stand-in for ssh: sharing, a drop mid-output, a client gone, the grace, the idle close, output past the cap |
 | `src/proxy.rs`    | `delish proxy`: on the host, ssh's stdin and stdout joined to the local server, after a `READY` or `ERROR` |
 
 ## Testing on a real host
@@ -84,8 +89,8 @@ once its last user closes it.
 - No async runtime: a few threads per connection, blocking I/O.
 - One `delishd` process holds every session: a thread per connection, a pty and one child per session, never a
   fork of the server. Its exit ends them all; a helper process per session was judged not worth it.
-- ssh always starts from the desktop session when a local server runs (`hop`): the hop runs with the server's
-  environment, not the caller's, so anything it needs from the caller (`DELISH_REMOTE_COMMAND`) goes as an argument.
+- ssh always starts from the desktop session when a local server runs: the link's ssh runs with the server's
+  environment, not the caller's, so anything it needs from the caller (`DELISH_REMOTE_COMMAND`) goes in the request.
 - Never hang: whatever cannot work (no server, Windows' `ssh.exe` in session 0) refuses at once with why.
 - Dependencies stay few: `libc` on unix, `windows-sys` and `uds_windows` on Windows.
 - Through ssh the command goes in the spawn frame, never in ssh's command line: the host's shell only ever runs

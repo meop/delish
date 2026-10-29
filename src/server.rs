@@ -1,16 +1,12 @@
 //! `delishd`: started inside the desktop session, it runs each command a client sends on a pty of its own, so the
 //! command has the session's context — its env, its window server, its token — whoever asked for it.
 
-use std::io::{self, Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
+use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
 
-use crate::proto::{self, Hello, Size, Spawn};
-use crate::pty;
-use crate::shell;
+use crate::proto::{self, Hello, Spawn};
+use crate::session::{Session, Sink};
 use crate::sock::{self, Stream};
 
 /// a line in ~/.delish/delishd.log: the server has no terminal to say it on
@@ -39,17 +35,6 @@ fn rotate(path: &std::path::Path, limit: u64) {
     }
 }
 
-/// what the log says a command is: its program, never its arguments, which can carry what is not the log's to keep
-fn program(argv: &[String]) -> String {
-    argv.first()
-        .map(|p| {
-            std::path::Path::new(p)
-                .file_name()
-                .map_or(p.clone(), |n| n.to_string_lossy().into_owned())
-        })
-        .unwrap_or_default()
-}
-
 pub fn serve() -> io::Result<()> {
     session_check()?;
     let listener = sock::listen()?;
@@ -75,7 +60,7 @@ pub fn serve() -> io::Result<()> {
 
 fn handle(mut stream: Stream) -> io::Result<()> {
     proto::write_frame(&mut stream, proto::HELLO, &Hello::ours().encode())?;
-    let mut spawn = match proto::read_frame(&mut stream)? {
+    let spawn = match proto::read_frame(&mut stream)? {
         Some((proto::SPAWN, payload)) => match Spawn::decode(&payload) {
             Ok(s) => s,
             Err(e) => {
@@ -83,6 +68,8 @@ fn handle(mut stream: Stream) -> io::Result<()> {
                 return proto::write_frame(&mut stream, proto::ERROR, e.to_string().as_bytes());
             }
         },
+        Some((proto::LINK, payload)) => return link_hello(stream, &payload),
+        Some((proto::REMOTE, payload)) => return crate::link::serve_client(stream, &payload),
         // `delish status` connects and goes: nothing to run, and nothing wrong
         None => return Ok(()),
         Some(_) => {
@@ -92,102 +79,50 @@ fn handle(mut stream: Stream) -> io::Result<()> {
             ));
         }
     };
-    if spawn.login {
-        spawn.argv = shell::login_argv(spawn.argv.first().map(String::as_str));
-    }
-    let (readers, mut writer, control) = match pty::spawn(&spawn) {
-        Ok(p) => p,
-        Err(e) => {
-            let msg = format!("could not run {:?}: {e}", spawn.argv[0]);
-            log(&format!("could not run {}: {e}", program(&spawn.argv)));
+    let out = Arc::new(Mutex::new(stream.try_clone()?));
+    let shutdown = stream.try_clone()?;
+    // the command's end: what it wrote last goes out before its exit code, and the connection closes after
+    let sink: Sink = Arc::new(move |kind, bytes| {
+        proto::write_frame(&mut *out.lock().unwrap(), kind, bytes)?;
+        if kind == proto::EXIT {
+            let _ = shutdown.shutdown(std::net::Shutdown::Both);
+        }
+        Ok(())
+    });
+    let session = match Session::start(spawn, sink) {
+        Ok(s) => s,
+        Err(msg) => {
+            log(&msg);
             return proto::write_frame(&mut stream, proto::ERROR, msg.as_bytes());
         }
     };
-    log(&format!("running {}", program(&spawn.argv)));
-    let control = Arc::new(control);
-    let out = Arc::new(Mutex::new(stream.try_clone()?));
-
-    // the command's output, as it comes, from the terminal and from stdout when that is a pipe
-    let (drained, read_done) = mpsc::channel::<()>();
-    let outputs = readers.len();
-    for mut reader in readers {
-        let reader_out = out.clone();
-        let drained = drained.clone();
-        let kind = if reader.stderr {
-            proto::STDERR
-        } else {
-            proto::OUTPUT
-        };
-        thread::spawn(move || {
-            let mut buf = [0u8; 16 * 1024];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        if proto::write_frame(&mut *reader_out.lock().unwrap(), kind, &buf[..n])
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                }
-            }
-            let _ = drained.send(());
-        });
-    }
-
-    // the command's end: what it wrote last goes out before its exit code, and the connection closes after
-    let waiter_control = control.clone();
-    let waiter_out = out.clone();
-    let shutdown = stream.try_clone()?;
-    let ended = Arc::new(AtomicBool::new(false));
-    let waiter_ended = ended.clone();
-    let waiter = thread::spawn(move || {
-        let code = waiter_control.wait().unwrap_or(255);
-        waiter_ended.store(true, Ordering::SeqCst);
-        waiter_control.close();
-        // a background process still holding the terminal would keep it open forever: the wait for it is bounded,
-        // and then the readers stop, so the terminal closes under it as a closed window's does
-        let until = std::time::Instant::now() + Duration::from_secs(2);
-        for _ in 0..outputs {
-            let left = until.saturating_duration_since(std::time::Instant::now());
-            if read_done.recv_timeout(left).is_err() {
-                break;
-            }
-        }
-        waiter_control.stop();
-        let _ = proto::write_frame(
-            &mut *waiter_out.lock().unwrap(),
-            proto::EXIT,
-            &code.to_le_bytes(),
-        );
-        let _ = shutdown.shutdown(std::net::Shutdown::Both);
-        code
-    });
+    log(&format!("running {}", session.program));
 
     // the client's keys and resizes. a client that goes away takes its command with it, as a closed terminal does
-    loop {
-        match proto::read_frame(&mut stream) {
-            Ok(Some((proto::INPUT, bytes))) => {
-                let _ = writer.write_all(&bytes);
-            }
-            Ok(Some((proto::EOF, _))) => writer.close(),
-            Ok(Some((proto::RESIZE, payload))) => {
-                if let Ok(size) = Size::decode(&payload) {
-                    let _ = control.resize(size);
-                }
-            }
-            Ok(Some(_)) => {}
-            Ok(None) | Err(_) => break,
-        }
+    while let Ok(Some((kind, payload))) = proto::read_frame(&mut stream) {
+        session.apply(kind, &payload);
     }
-    // never once it has been waited on: its pid may be another process's by now
-    if !ended.load(Ordering::SeqCst) {
-        control.kill();
-    }
-    let code = waiter.join().unwrap_or(255);
-    log(&format!("{} exited {code}", program(&spawn.argv)));
+    session.hang_up();
+    let code = session.wait();
+    log(&format!("{} exited {code}", session.program));
     Ok(())
+}
+
+/// a link's first frame carries the protocol its other end speaks, which has to be this one
+fn link_hello(mut stream: Stream, payload: &[u8]) -> io::Result<()> {
+    let theirs = payload
+        .get(..4)
+        .map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+    if theirs != Some(proto::PROTOCOL) {
+        let msg = format!(
+            "this delishd is {} and speaks protocol {}, the other end another: update delish on both machines, then restart delishd",
+            proto::VERSION,
+            proto::PROTOCOL
+        );
+        return proto::write_frame(&mut stream, proto::ERROR, msg.as_bytes());
+    }
+    proto::write_frame(&mut stream, proto::LINK, &proto::PROTOCOL.to_le_bytes())?;
+    crate::hosted::serve(stream)
 }
 
 /// what it runs is run as it is: a server started elevated, or as root, would hand that to every command, and one
@@ -259,8 +194,8 @@ mod tests {
     #[test]
     fn the_log_names_a_program_and_none_of_its_arguments() {
         let argv = ["/bin/zsh", "-l", "-c", "curl -H 'token: secret'"].map(String::from);
-        assert_eq!(program(&argv), "zsh");
-        assert_eq!(program(&[]), "");
+        assert_eq!(crate::session::program(&argv), "zsh");
+        assert_eq!(crate::session::program(&[]), "");
     }
 
     #[test]

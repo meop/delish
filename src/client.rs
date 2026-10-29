@@ -15,11 +15,6 @@ use crate::term;
 
 const FALLBACK: Size = Size { rows: 24, cols: 80 };
 
-/// the subcommand the server is handed for `delish <host>`: ssh from where it runs, never handed on again
-pub const HOP: &str = "hop";
-/// `delish hop`'s first option: the remote command, as `delish <host>` found it
-pub const REMOTE_COMMAND_OPTION: &str = "--remote-command";
-
 /// how the frames ended: the command's code, or the connection's end before it, or before the server's hello
 enum End {
     Exit(i32),
@@ -53,9 +48,10 @@ pub fn run(argv: Vec<String>, login: bool) -> i32 {
     let cwd = std::env::current_dir()
         .map(|d| d.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let ended = stream
-        .try_clone()
-        .and_then(|up| relay(stream, Box::new(up), spawn(argv, login, cwd), ""));
+    let ended = stream.try_clone().and_then(|up| {
+        let s = spawn(argv, login, cwd);
+        relay(stream, Box::new(up), (proto::SPAWN, s.encode()), s.size, "")
+    });
     match ended {
         Ok(End::Exit(code)) => code,
         Ok(End::Closed) => {
@@ -114,11 +110,11 @@ pub fn status() -> i32 {
 
 /// the host's login shell, run by the host's server: interactive, or running the command. the cwd here means nothing
 /// there, so the command starts in the user's home, as an ssh login does. ssh always starts from the desktop session:
-/// through this user's own server when one is running, wherever this was typed, so the hop has that session's ssh
-/// agent, keys and PATH; without one, from here
+/// through this user's own server when one is running, wherever this was typed, over its link to the host, which has
+/// that session's ssh agent, keys and PATH; without one, from here
 pub fn remote(target: ssh::Target) -> i32 {
-    if sock::connect().is_ok() {
-        return from_desktop();
+    if let Ok(stream) = sock::connect() {
+        return linked(stream, target);
     }
     if !ssh_can_pipe() {
         eprintln!(
@@ -135,7 +131,43 @@ pub fn remote_command() -> String {
     std::env::var("DELISH_REMOTE_COMMAND").unwrap_or_else(|_| ssh::REMOTE_COMMAND.into())
 }
 
-/// ssh, from here: what the server runs for `remote`
+/// the session over this user's server's link to the host
+fn linked(stream: sock::Stream, target: ssh::Target) -> i32 {
+    let s = spawn(target.command.into_iter().collect(), true, String::new());
+    let mut args = target.options;
+    args.extend(["--".into(), target.host.clone()]);
+    let req = crate::link::Request {
+        args,
+        remote: remote_command(),
+        spawn: s.encode(),
+    };
+    let ended = stream.try_clone().and_then(|up| {
+        relay(
+            stream,
+            Box::new(up),
+            (proto::REMOTE, req.encode()),
+            s.size,
+            "",
+        )
+    });
+    match ended {
+        Ok(End::Exit(code)) => code,
+        Ok(End::Closed) => {
+            eprintln!(
+                "delish: the session on {} ended before its command exited",
+                target.host
+            );
+            255
+        }
+        Ok(End::NoHello) => older_server(""),
+        Err(e) => {
+            eprintln!("delish: {e}");
+            255
+        }
+    }
+}
+
+/// ssh, from here, with no server of this user's to link through
 pub fn hop(target: ssh::Target, remote: String) -> i32 {
     if !ssh_can_pipe() {
         eprintln!(
@@ -160,7 +192,8 @@ pub fn hop(target: ssh::Target, remote: String) -> i32 {
     };
     let argv = target.command.into_iter().collect();
     let who = format!("{}: ", target.host);
-    let ended = relay(down, Box::new(up), spawn(argv, true, String::new()), &who);
+    let s = spawn(argv, true, String::new());
+    let ended = relay(down, Box::new(up), (proto::SPAWN, s.encode()), s.size, &who);
     // ssh ends once the host's command has, and has said itself why it failed, when it has
     let ssh_code = child.wait().ok().and_then(|s| s.code()).unwrap_or(255);
     match ended {
@@ -198,30 +231,6 @@ fn ssh_can_pipe() -> bool {
     true
 }
 
-/// this same command, run by this user's server as `delish hop <host>`: this terminal stays its terminal. the
-/// server's environment is not this one, so the remote command goes along as an argument
-fn from_desktop() -> i32 {
-    let exe = match std::env::current_exe() {
-        Ok(p) => p.to_string_lossy().into_owned(),
-        Err(e) => {
-            eprintln!("delish: {e}");
-            return 255;
-        }
-    };
-    run(
-        [
-            exe,
-            HOP.into(),
-            REMOTE_COMMAND_OPTION.into(),
-            remote_command(),
-        ]
-        .into_iter()
-        .chain(std::env::args().skip(1))
-        .collect(),
-        false,
-    )
-}
-
 fn spawn(argv: Vec<String>, login: bool, cwd: String) -> Spawn {
     let env = ["TERM", "COLORTERM"]
         .iter()
@@ -245,12 +254,12 @@ fn spawn(argv: Vec<String>, login: bool, cwd: String) -> Spawn {
 fn relay(
     mut down: impl Read,
     up: Box<dyn Write + Send>,
-    spawn: Spawn,
+    first: (u8, Vec<u8>),
+    size: Size,
     who: &str,
 ) -> io::Result<End> {
-    let size = spawn.size;
     let up: Sink = Arc::new(Mutex::new(up));
-    proto::write_frame(&mut *up.lock().unwrap(), proto::SPAWN, &spawn.encode())?;
+    proto::write_frame(&mut *up.lock().unwrap(), first.0, &first.1)?;
 
     let mut started = false;
     let mut raw = None;

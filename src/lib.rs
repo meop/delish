@@ -3,10 +3,14 @@
 
 pub mod client;
 pub mod cmdline;
+pub mod hosted;
+pub mod link;
+pub mod mux;
 pub mod proto;
 pub mod proxy;
 pub mod pty;
 pub mod server;
+pub mod session;
 pub mod shell;
 pub mod sock;
 pub mod ssh;

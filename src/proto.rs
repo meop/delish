@@ -25,9 +25,13 @@ pub const READY: u8 = 13;
 pub const HELLO: u8 = 14;
 /// server → client: bytes the command wrote to its stderr, when that is not the terminal
 pub const STDERR: u8 = 15;
+/// another server → server, first: what follows is a link, carrying many sessions (`mux`)
+pub const LINK: u8 = 16;
+/// client → its own server, first: run a session on another host, over that server's link to it
+pub const REMOTE: u8 = 17;
 
 /// the frames and their payloads; a change to either is a new protocol
-pub const PROTOCOL: u32 = 3;
+pub const PROTOCOL: u32 = 4;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const MAX_FRAME: u32 = 16 << 20;

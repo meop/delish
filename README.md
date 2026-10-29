@@ -40,17 +40,35 @@ config applies as it does to ssh.
 It runs `ssh -T <host> delish proxy`: `delish proxy` on the host joins ssh's stdin and stdout to the user's
 `delishd` there, and the frames go through ssh untouched. So the host needs `delish` on the PATH an ssh command gets
 (`DELISH_REMOTE_COMMAND` replaces `delish proxy`) and a `delishd` running in its desktop session. The command
-travels in the frames, not as a command line for the host's shell, so nothing in it is quoted twice. A password or
-host key prompt is answered before the terminal goes raw. A dropped connection ends the command, as with `ssh -t`.
+travels in the frames, not as a command line for the host's shell, so nothing in it is quoted twice.
 
-A host named `run`, `shell`, `status`, `proxy` or `hop` is written `user@host`, or after `--`.
+A host named `run`, `shell`, `status` or `proxy` is written `user@host`, or after `--`.
 
-ssh always starts from the desktop session. When a local `delishd` is running, `delish <host>` hands itself to it,
-from a desktop terminal or from inside an ssh login, on every OS, and the server runs `delish hop <host>`, which calls
-ssh: the hop gets the desktop session's ssh agent, keys and PATH, and nested logins go as far as they like. With no
-local server, ssh runs from where it was typed, except in a Windows ssh login (session 0), where Windows' `ssh.exe`
-never reads a pipe for its stdin and would hang: there it refuses. An agent forwarded with `ssh -A` into a login is
-not the one the hop uses, when a local server is running.
+### Links
+
+When a local `delishd` is running, `delish <host>` asks it for the session, from a desktop terminal or from inside an
+ssh login, on every OS, and the server reaches the host over a **link**: one ssh connection to that host's `delishd`
+that carries every session this server has there. Thirty sessions to a host are one ssh connection and one
+`delish proxy`, not thirty, and a session to a host that already has a link starts without a new connection. The link's
+ssh starts from the desktop session, with its ssh agent, keys and PATH, and nested logins go as far as they like.
+
+- A link that drops comes back by itself, trying again after half a second, then a second, two, four, up to thirty,
+  and its sessions carry on where they were: both ends keep what they sent until the other says it arrived, and send
+  it again on the new link, so nothing is lost or seen twice. A session's command that writes faster than a link
+  carries it, or while it is down, is paused, as a slow terminal pauses it, rather than losing output.
+- A link that hears nothing for 45 seconds is taken for dropped, which a connection that went away without closing
+  (a laptop asleep, a network gone) needs. One down for longer than its grace (`DELISH_LINK_GRACE`, 600 seconds, in
+  the server's environment) ends its sessions with why; on the host, a session left with no link for that long ends
+  as a closed terminal ends its command.
+- A link outlives its last session by `DELISH_LINK_IDLE` (600 seconds), so the next starts at once.
+- A client that goes away (its terminal closed) ends its session on the host at once, as with `ssh -t`.
+- The link's ssh has no terminal to ask on: it runs with `BatchMode=yes`, so the host's key must be known and the
+  login must not need a password (an agent, or a key without one). A link that cannot start says what ssh said.
+- `DELISH_SSH` names the program the server runs for ssh.
+
+With no local server, ssh runs from where it was typed, one connection per session, except in a Windows ssh login
+(session 0), where Windows' `ssh.exe` never reads a pipe for its stdin and would hang: there it refuses. An agent
+forwarded with `ssh -A` into a login is not the one a link uses, when a local server is running.
 
 ## How it works
 
