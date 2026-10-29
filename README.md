@@ -26,31 +26,60 @@ version, 1 with no server, and 3 with another, the case after an upgrade until t
 A client and a server speak a numbered protocol, and the server says its own and its version first: a pair that do not
 match stops at once and says which side to update, rather than misreading each other.
 
-### Another host's desktop, over ssh
+### Another host's desktop
 
 ```sh
-delish [ssh options] <host> [command]
+delish <host> [command]
 ```
 
-is `ssh <host> [command]`, run in the host's desktop session: with no command, an interactive login shell there, in
-this terminal; with one, the login shell runs it (the words after the host are joined with spaces, as ssh joins them)
-and its exit code is this one's. ssh's options go before the host (`delish -p 2222 -J jump user@glass`), and its
-config applies as it does to ssh.
+runs in the host's desktop session: with no command, an interactive login shell there, in this terminal; with one, the
+login shell runs it (the words after the host are joined with spaces, as ssh joins them) and its exit code is this
+one's. The command travels in the frames, not as a command line for anyone's shell, so nothing in it is quoted twice.
 
-It runs `ssh -T <host> delish proxy`: `delish proxy` on the host joins ssh's stdin and stdout to the user's
-`delishd` there, and the frames go through ssh untouched. So the host needs `delish` on the PATH an ssh command gets
-(`DELISH_REMOTE_COMMAND` replaces `delish proxy`) and a `delishd` running in its desktop session. The command
-travels in the frames, not as a command line for the host's shell, so nothing in it is quoted twice.
+The client asks its own `delishd`, from a desktop terminal or from inside an ssh login, and the server reaches the
+host's `delishd` directly over TCP, on port 7397 unless the host's address names another. Each server proves its key
+to the other, as WireGuard's peers do: Noise's XX handshake, then every byte encrypted with ChaCha20-Poly1305. A host
+whose server proves a key other than the one known for it is refused, and so is a client whose key the host has not
+authorized. No other program is involved: no ssh, no login, no password.
 
-A host named `run`, `shell`, `status` or `proxy` is written `user@host`, or after `--`.
+A host named like one of delish's commands (`run`, `key`, `ping`) is written after `--`.
+
+### Keys and hosts
+
+What a server proves and trusts is in `~/.delish` (`%USERPROFILE%\.delish` on Windows), in files of one entry a line,
+`#` starting a comment, the same on every OS:
+
+| file         | what it holds                                                                                        |
+| ------------ | ---------------------------------------------------------------------------------------------------- |
+| `key`        | this machine's private key, made the first time one is needed; only its user can read it, and it never leaves |
+| `hosts`      | `<name> <address[:port]> <key>`: where each host is, and the key its server must prove               |
+| `authorized` | `<key> <name>`: the keys that may run sessions as this user here                                     |
+| `config`     | `listen <address:port>`: where this server listens for other hosts, every address on 7397 unless set |
+
+```sh
+delish key                                   # this machine's public key, to give the other hosts
+delish trust <name> <address[:port]> <key>   # reach <name> there, expecting that key; again to change it
+delish forget <name>
+delish authorize <key> <name>                # let that machine's server run sessions as you here
+delish revoke <name or key>
+delish hosts                                 # what is trusted
+delish peers                                 # what is authorized
+delish ping <host>                           # connect, both keys proved, and say what answered and how fast
+```
+
+Public keys are not secrets: `hosts` and `authorized` can be kept in one place and copied to every machine, as an
+`authorized_keys` is. A private key never needs to be copied; a machine's key that is lost is made again, and its new
+public key given out again. The files are read on each connection, so a change takes effect without a restart.
+
+A server that cannot listen (the port taken, no key) still serves its own machine, and says why in its log. The port
+has to be open to the other hosts: a firewall's inbound rule for it, and on a host reached through a forwarded port
+(a VM behind its host's NAT), that host's address and the forwarded port in `hosts`.
 
 ### Links
 
-When a local `delishd` is running, `delish <host>` asks it for the session, from a desktop terminal or from inside an
-ssh login, on every OS, and the server reaches the host over a **link**: one ssh connection to that host's `delishd`
-that carries every session this server has there. Thirty sessions to a host are one ssh connection and one
-`delish proxy`, not thirty, and a session to a host that already has a link starts without a new connection. The link's
-ssh starts from the desktop session, with its ssh agent, keys and PATH, and nested logins go as far as they like.
+The server reaches a host over a **link**: one connection to that host's `delishd` that carries every session this
+server has there. Thirty sessions to a host are one connection, not thirty, and a session to a host that already has
+a link starts without a new connection or handshake. Nested logins go as far as they like.
 
 - A link that drops comes back by itself, trying again after half a second, then a second, two, four, up to thirty,
   and its sessions carry on where they were: both ends keep what they sent until the other says it arrived, and send
@@ -62,13 +91,7 @@ ssh starts from the desktop session, with its ssh agent, keys and PATH, and nest
   as a closed terminal ends its command.
 - A link outlives its last session by `DELISH_LINK_IDLE` (600 seconds), so the next starts at once.
 - A client that goes away (its terminal closed) ends its session on the host at once, as with `ssh -t`.
-- The link's ssh has no terminal to ask on: it runs with `BatchMode=yes`, so the host's key must be known and the
-  login must not need a password (an agent, or a key without one). A link that cannot start says what ssh said.
-- `DELISH_SSH` names the program the server runs for ssh.
-
-With no local server, ssh runs from where it was typed, one connection per session, except in a Windows ssh login
-(session 0), where Windows' `ssh.exe` never reads a pipe for its stdin and would hang: there it refuses. An agent
-forwarded with `ssh -A` into a login is not the one a link uses, when a local server is running.
+- A link that cannot start the first time (the host unreachable, a key refused) ends its sessions at once, with why.
 
 ## How it works
 
@@ -76,8 +99,8 @@ forwarded with `ssh -A` into a login is not the one a link uses, when a local se
   already there can start others with the session's env, display and token, and nothing from an ssh login can
   start one later. It serves every connection at once, a thread for each, and never forks itself: each connection
   gets a pty of its own and one child process on it, the command or the interactive login shell — to the server
-  they are the same, run until it exits. A session from another host reaches it through ssh and a `delish proxy`
-  of its own on that host, which joins ssh to the local socket. If `delishd` exits, every session it runs ends with
+  they are the same, run until it exits. A session from another host reaches it over that host's server's link. If
+  `delishd` exits, every session it runs ends with
   it, as a terminal's tabs do; run zellij or tmux inside a session that has to outlive a restart.
 - `delishd` listens on a unix socket at `~/.delish/delishd.sock` (`%USERPROFILE%` on Windows), in a directory only
   its user can open (a directory `DELISH_SOCKET` moves it to is left as it is). It logs to `~/.delish/delishd.log`,
@@ -94,8 +117,8 @@ forwarded with `ssh -A` into a login is not the one a link uses, when a local se
   none, there is no pty at all (and on Windows no ConPTY), as with `ssh -T`.
 - When the command has exited, its terminal is closed after at most two seconds, as sshd closes a session's: a
   background job still holding it gets the hangup a closed window gives, rather than keeping the session open.
-- A client that goes away takes its command with it, as a closed terminal does. Over `ssh -t`, dropping the
-  connection ends the command; without `-t`, sshd leaves the client running, as it does any command.
+- A client that goes away takes its command with it, as a closed terminal does. A client in an ssh login whose
+  connection drops goes with it over `ssh -t`; without `-t`, sshd leaves the client running, as it does any command.
 - On Windows a login shell that is a batch file (`shell.bat`) is started through `cmd.exe` with the quoting Rust's
   standard library gives a batch file, so `|`, `&`, `"` and `%` in the command reach the shell as written.
 - On Windows `delishd` is a GUI subsystem binary, so no console window opens in the session.
@@ -132,7 +155,8 @@ To roll a new version out: install it on each machine, by whatever put delish th
 command above; `delish status` says which still run an older one. A restart ends every session the server runs, the
 one it was typed in too, so have the service manager do it (`systemctl`, `launchctl kickstart`, a process started
 apart from the session on Windows), which finishes the restart even when the session that asked for it ends. A client
-and a server on different protocols stop at once and say which to update.
+and a server on different protocols stop at once and say which to update, and so do two servers: a new protocol means
+every machine's delish, at once.
 
 ## Building
 

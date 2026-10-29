@@ -1,16 +1,14 @@
 //! `delish run`, `shell` and `<host>`: asks a `delishd` to run a command in its desktop session, and is that
 //! command's terminal here — keys and resizes go there, its output comes back, and its exit code is this one's. The
-//! server is this user's own, on its socket, or a host's, through ssh and `delish proxy` there.
+//! server is always this user's own, on its socket; another host's sessions go over its links.
 
 use std::io::{self, Read, Write};
-use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use crate::proto::{self, Hello, Size, Spawn};
 use crate::sock;
-use crate::ssh;
 use crate::term;
 
 const FALLBACK: Size = Size { rows: 24, cols: 80 };
@@ -109,36 +107,22 @@ pub fn status() -> i32 {
 }
 
 /// the host's login shell, run by the host's server: interactive, or running the command. the cwd here means nothing
-/// there, so the command starts in the user's home, as an ssh login does. ssh always starts from the desktop session:
-/// through this user's own server when one is running, wherever this was typed, over its link to the host, which has
-/// that session's ssh agent, keys and PATH; without one, from here
-pub fn remote(target: ssh::Target) -> i32 {
-    if let Ok(stream) = sock::connect() {
-        return linked(stream, target);
-    }
-    if !ssh_can_pipe() {
-        eprintln!(
-            "delish: delish <host> cannot run from a windows ssh login, where windows' ssh.exe does not read a pipe, and there is no delishd in this user's desktop session ({}) to run it from instead",
-            sock::path().display()
-        );
-        return 255;
-    }
-    hop(target, remote_command())
-}
-
-/// what runs on the host: read where `delish <host>` was typed, and handed to the server with the rest
-pub fn remote_command() -> String {
-    std::env::var("DELISH_REMOTE_COMMAND").unwrap_or_else(|_| ssh::REMOTE_COMMAND.into())
-}
-
-/// the session over this user's server's link to the host
-fn linked(stream: sock::Stream, target: ssh::Target) -> i32 {
-    let s = spawn(target.command.into_iter().collect(), true, String::new());
-    let mut args = target.options;
-    args.extend(["--".into(), target.host.clone()]);
+/// there, so the command starts in the user's home. it goes over this user's own server's link to the host, which
+/// holds this machine's key
+pub fn remote(host: String, command: Option<String>) -> i32 {
+    let stream = match sock::connect() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!(
+                "delish: no delishd in this user's desktop session ({}) to reach {host} through: {e}",
+                sock::path().display()
+            );
+            return 255;
+        }
+    };
+    let s = spawn(command.into_iter().collect(), true, String::new());
     let req = crate::link::Request {
-        args,
-        remote: remote_command(),
+        host: host.clone(),
         spawn: s.encode(),
     };
     let ended = stream.try_clone().and_then(|up| {
@@ -153,10 +137,7 @@ fn linked(stream: sock::Stream, target: ssh::Target) -> i32 {
     match ended {
         Ok(End::Exit(code)) => code,
         Ok(End::Closed) => {
-            eprintln!(
-                "delish: the session on {} ended before its command exited",
-                target.host
-            );
+            eprintln!("delish: the session on {host} ended before its command exited");
             255
         }
         Ok(End::NoHello) => older_server(""),
@@ -165,70 +146,6 @@ fn linked(stream: sock::Stream, target: ssh::Target) -> i32 {
             255
         }
     }
-}
-
-/// ssh, from here, with no server of this user's to link through
-pub fn hop(target: ssh::Target, remote: String) -> i32 {
-    if !ssh_can_pipe() {
-        eprintln!(
-            "delish: windows' ssh.exe does not read a pipe in a windows ssh login (session 0)"
-        );
-        return 255;
-    }
-    let mut child = match Command::new("ssh")
-        .args(ssh::argv(&target, &remote))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("delish: could not run ssh: {e}");
-            return 255;
-        }
-    };
-    let (Some(up), Some(down)) = (child.stdin.take(), child.stdout.take()) else {
-        return 255;
-    };
-    let argv = target.command.into_iter().collect();
-    let who = format!("{}: ", target.host);
-    let s = spawn(argv, true, String::new());
-    let ended = relay(down, Box::new(up), (proto::SPAWN, s.encode()), s.size, &who);
-    // ssh ends once the host's command has, and has said itself why it failed, when it has
-    let ssh_code = child.wait().ok().and_then(|s| s.code()).unwrap_or(255);
-    match ended {
-        Ok(End::Exit(code)) => code,
-        Ok(End::Closed | End::NoHello) if ssh_code != 0 => ssh_code,
-        Ok(End::NoHello) => older_server(&who),
-        Ok(End::Closed) => {
-            eprintln!(
-                "delish: the connection to {} closed before the command exited",
-                target.host
-            );
-            255
-        }
-        Err(e) => {
-            eprintln!("delish: {e}");
-            255
-        }
-    }
-}
-
-/// windows' ssh.exe never reads a pipe for its stdin in session 0, where a windows ssh login is (the same pipe works
-/// from the desktop): through it, the spawn would never arrive and the client would wait forever
-#[cfg(windows)]
-fn ssh_can_pipe() -> bool {
-    use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
-    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
-
-    let mut session = 0u32;
-    let known = unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) } != 0;
-    !known || session != 0
-}
-
-#[cfg(unix)]
-fn ssh_can_pipe() -> bool {
-    true
 }
 
 fn spawn(argv: Vec<String>, login: bool, cwd: String) -> Spawn {
@@ -249,8 +166,7 @@ fn spawn(argv: Vec<String>, login: bool, cwd: String) -> Spawn {
 }
 
 /// the spawn goes first. the terminal is taken over — raw, its keys read — only once the server has said HELLO in
-/// this protocol: through ssh, which asks for a password or a host key on this same terminal, that comes after the
-/// proxy's READY. `who` names the server's host in what it says
+/// this protocol. `who` names the server's host in what it says
 fn relay(
     mut down: impl Read,
     up: Box<dyn Write + Send>,
@@ -266,7 +182,6 @@ fn relay(
     let mut stdout = io::stdout().lock();
     let end = loop {
         match proto::read_frame(&mut down)? {
-            Some((proto::READY, _)) if !started => {}
             Some((proto::HELLO, payload)) if !started => {
                 let hello = Hello::decode(&payload)?;
                 if hello.protocol != proto::PROTOCOL {

@@ -43,6 +43,7 @@ pub fn serve() -> io::Result<()> {
         sock::path().display(),
         std::process::id()
     ));
+    thread::spawn(listen_for_peers);
     for conn in listener.incoming() {
         match conn {
             Ok(stream) => {
@@ -68,7 +69,6 @@ fn handle(mut stream: Stream) -> io::Result<()> {
                 return proto::write_frame(&mut stream, proto::ERROR, e.to_string().as_bytes());
             }
         },
-        Some((proto::LINK, payload)) => return link_hello(stream, &payload),
         Some((proto::REMOTE, payload)) => return crate::link::serve_client(stream, &payload),
         // `delish status` connects and goes: nothing to run, and nothing wrong
         None => return Ok(()),
@@ -108,21 +108,60 @@ fn handle(mut stream: Stream) -> io::Result<()> {
     Ok(())
 }
 
-/// a link's first frame carries the protocol its other end speaks, which has to be this one
-fn link_hello(mut stream: Stream, payload: &[u8]) -> io::Result<()> {
-    let theirs = payload
-        .get(..4)
-        .map(|b| u32::from_le_bytes(b.try_into().unwrap()));
-    if theirs != Some(proto::PROTOCOL) {
-        let msg = format!(
-            "this delishd is {} and speaks protocol {}, the other end another: update delish on both machines, then restart delishd",
-            proto::VERSION,
-            proto::PROTOCOL
-        );
-        return proto::write_frame(&mut stream, proto::ERROR, msg.as_bytes());
+/// another host's server: its key proved and authorized, then a link to serve
+fn handle_peer(tcp: std::net::TcpStream, private: &crate::keys::Key) -> io::Result<()> {
+    let peer = tcp.peer_addr().map(|a| a.to_string()).unwrap_or_default();
+    let _ = tcp.set_read_timeout(Some(crate::hosted::DEAD_AFTER));
+    let authorized = crate::keys::authorized();
+    let (mut reader, mut writer, key) =
+        crate::noise::respond(tcp, private, |k| authorized.iter().any(|p| &p.key == k))?;
+    let name = authorized
+        .iter()
+        .find(|p| p.key == key)
+        .map_or("?", |p| p.name.as_str())
+        .to_string();
+    proto::write_frame(&mut writer, proto::HELLO, &Hello::ours().encode())?;
+    match proto::read_frame(&mut reader)? {
+        Some((proto::LINK, _)) => {}
+        // `delish ping` proves its key, hears the hello, and goes
+        None => return Ok(()),
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a peer's first frame is not a link",
+            ));
+        }
     }
-    proto::write_frame(&mut stream, proto::LINK, &proto::PROTOCOL.to_le_bytes())?;
-    crate::hosted::serve(stream)
+    proto::write_frame(&mut writer, proto::LINK, &proto::PROTOCOL.to_le_bytes())?;
+    log(&format!("a link from {name} ({peer})"));
+    crate::hosted::serve(reader, Arc::new(Mutex::new(Box::new(writer))))
+}
+
+/// other hosts' servers, on config's `listen`: a server that cannot listen there still serves this machine
+fn listen_for_peers() {
+    let address = crate::keys::listen();
+    let private = match crate::keys::mine() {
+        Ok((private, _)) => private,
+        Err(e) => return log(&format!("no key, so no links from other hosts: {e}")),
+    };
+    let listener = match std::net::TcpListener::bind(&address) {
+        Ok(l) => l,
+        Err(e) => return log(&format!("cannot listen on {address} for other hosts: {e}")),
+    };
+    let bound = listener.local_addr().map_or(address, |a| a.to_string());
+    log(&format!("listening on {bound} for other hosts"));
+    for conn in listener.incoming() {
+        match conn {
+            Ok(tcp) => {
+                thread::spawn(move || {
+                    if let Err(e) = handle_peer(tcp, &private) {
+                        log(&format!("peer: {e}"));
+                    }
+                });
+            }
+            Err(e) => log(&format!("accept: {e}")),
+        }
+    }
 }
 
 /// what it runs is run as it is: a server started elevated, or as root, would hand that to every command, and one

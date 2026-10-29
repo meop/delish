@@ -1,7 +1,6 @@
 //! The wire format between `delish` and `delishd`: frames of a kind byte, a little-endian u32 length, then the
 //! payload. One connection runs one command. The server's first frame is a HELLO and the client's a SPAWN, each
 //! starting with the protocol they speak, so a client and a server that differ say so rather than misread each other.
-//! READY and ERROR from `delish proxy` come before any of it, and keep their shape in every protocol.
 
 use std::io::{self, Read, Write};
 
@@ -19,8 +18,6 @@ pub const OUTPUT: u8 = 10;
 pub const EXIT: u8 = 11;
 /// server → client: why the command could not be run, last
 pub const ERROR: u8 = 12;
-/// proxy → client, before the server's frames: `delish proxy` on the host has reached its server
-pub const READY: u8 = 13;
 /// server → client, first: the protocol it speaks and its version
 pub const HELLO: u8 = 14;
 /// server → client: bytes the command wrote to its stderr, when that is not the terminal
@@ -31,7 +28,7 @@ pub const LINK: u8 = 16;
 pub const REMOTE: u8 = 17;
 
 /// the frames and their payloads; a change to either is a new protocol
-pub const PROTOCOL: u32 = 4;
+pub const PROTOCOL: u32 = 5;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const MAX_FRAME: u32 = 16 << 20;

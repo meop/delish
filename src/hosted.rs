@@ -13,7 +13,6 @@ use crate::mux::{self, Frames, Inbox, Outbox, Sid};
 use crate::proto::{self, Spawn};
 use crate::server::log;
 use crate::session::{Session, Sink};
-use crate::sock::Stream;
 
 /// how many unacknowledged bytes of a session's output it may get ahead by before it is paused
 pub const OUT_CAP: usize = 4 << 20;
@@ -34,7 +33,7 @@ pub fn grace() -> Duration {
     seconds("DELISH_LINK_GRACE", 600)
 }
 
-type Writer = Arc<Mutex<Stream>>;
+pub type Writer = Arc<Mutex<Box<dyn io::Write + Send>>>;
 
 struct Hosted {
     session: OnceLock<Session>,
@@ -166,11 +165,10 @@ fn open(sid: Sid, payload: &[u8], link: u64, w: &Writer) {
 }
 
 /// a link from another server: its sessions' frames until it ends, when they are detached, not ended
-pub fn serve(mut stream: Stream) -> io::Result<()> {
+/// the caller has the reader time out after DEAD_AFTER without a frame
+pub fn serve(mut reader: impl io::Read, w: Writer) -> io::Result<()> {
     static LINKS: AtomicU64 = AtomicU64::new(1);
     let link = LINKS.fetch_add(1, Ordering::SeqCst);
-    let w: Writer = Arc::new(Mutex::new(stream.try_clone()?));
-    let _ = stream.set_read_timeout(Some(DEAD_AFTER));
     let alive = Arc::new(AtomicBool::new(true));
     {
         let (w, alive) = (w.clone(), alive.clone());
@@ -184,7 +182,7 @@ pub fn serve(mut stream: Stream) -> io::Result<()> {
         });
     }
     log("a link opened");
-    while let Ok(Some(f)) = mux::read(&mut stream) {
+    while let Ok(Some(f)) = mux::read(&mut reader) {
         let found = hosted().lock().unwrap().get(&f.sid).cloned();
         match (f.kind, found) {
             (mux::OPEN, None) => open(f.sid, &f.payload, link, &w),

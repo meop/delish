@@ -57,23 +57,24 @@ the `GPG_PRIVATE_KEY` and `GPG_PASSPHRASE` repository secrets. Never create the 
 
 | file              | what it is                                                                                 |
 | ----------------- | ------------------------------------------------------------------------------------------ |
-| `src/proto.rs`    | the wire format: frames of kind byte + u32 LE length + payload; one connection, one command. the server's first frame is `HELLO` (protocol, version) and the client's `SPAWN`, which starts with the protocol: size, login flag, whether each of the client's stdin, stdout and stderr is a terminal, cwd, argv, env; then `INPUT`, `RESIZE` and, for a stdin that is not a terminal, `EOF`. Instead of a `SPAWN`, a client's `REMOTE` asks for a session on another host, and another server's `LINK` opens a link (`mux`); from the server, `OUTPUT` (the terminal, or stdout) and `STDERR` (stderr, when it is not the terminal). `PROTOCOL` goes up with any change to a frame or payload. `READY` and `ERROR` from the proxy come before any of it and never change shape |
+| `src/proto.rs`    | the wire format: frames of kind byte + u32 LE length + payload; one connection, one command. the server's first frame is `HELLO` (protocol, version) and the client's `SPAWN`, which starts with the protocol: size, login flag, whether each of the client's stdin, stdout and stderr is a terminal, cwd, argv, env; then `INPUT`, `RESIZE` and, for a stdin that is not a terminal, `EOF`. Instead of a `SPAWN`, a client's `REMOTE` asks for a session on another host, and another server's `LINK` opens a link (`mux`); from the server, `OUTPUT` (the terminal, or stdout) and `STDERR` (stderr, when it is not the terminal). `PROTOCOL` goes up with any change to a frame or payload, and is in the Noise prologue, so servers on different protocols fail the handshake |
 | `src/sock.rs`     | the socket path and its permissions; `std` unix sockets, `uds_windows` on Windows          |
 | `src/pty/unix.rs` | `openpty` for the streams the client has a terminal for and none without, the child in its own session with the pty as its controlling terminal; a pipe for each other stream; readers that a stop ends |
 | `src/pty/windows.rs` | ConPTY from kernel32 (the console's own; nothing side-loaded) for the streams the client has a terminal for, a hidden console without; a pipe for each other stream |
 | `src/cmdline.rs`  | a Windows command line from argv: the C runtime's quoting, or std's for a batch file through `cmd.exe`; plain strings, tested everywhere |
 | `src/shell.rs`    | the login shell: the account's with `-l` on unix, OpenSSH's `DefaultShell` on Windows    |
 | `src/term.rs`     | the client's terminal: size, and raw mode while a command runs                             |
-| `src/server.rs`   | `delishd`: one thread per connection, whose first frame says what it is: a client's `SPAWN` (its session), its `REMOTE` (to `link`), another server's `LINK` (to `hosted`); the log, with programs and no arguments, rotated; refuses to start elevated, as root, or in session 0 |
-| `src/client.rs`  | `delish run`, `shell` and `<host>`: keys and resizes in, output out, the command's exit code as its own. `<host>` with a local server running asks it for the session (`REMOTE`); without one it calls ssh itself, except in a Windows ssh login (session 0), where it refuses |
-| `src/ssh.rs`      | `delish <host>`: ssh's options and the host from the arguments, and the `ssh -T` command line |
+| `src/server.rs`   | `delishd`: one thread per connection, whose first frame says what it is: a client's `SPAWN` (its session) or `REMOTE` (to `link`); on config's TCP port, another server, its key proved and authorized, then its `LINK` (to `hosted`); the log, with programs and no arguments, rotated; refuses to start elevated, as root, or in session 0 |
+| `src/client.rs`  | `delish run`, `shell` and `<host>`: keys and resizes in, output out, the command's exit code as its own. `<host>` asks the local server for the session (`REMOTE`), and refuses at once without one |
+| `src/keys.rs`    | `~/.delish`'s `key`, `hosts`, `authorized` and `config`: whitespace-separated lines, keys in base64, written whole through a temporary file |
+| `src/noise.rs`   | a TCP connection between two servers: Noise XX (x25519, ChaCha20-Poly1305, BLAKE2s) through `snow`, each side's key judged by the caller, then a reader and a writer of encrypted messages |
+| `src/manage.rs`  | `delish key`, `hosts`, `trust`, `forget`, `peers`, `authorize`, `revoke`, `ping`: pure functions over the lists, tested, and thin commands around them |
 | `tests/unix.rs`  | end to end against a real `delishd`: piped stdin's end, byte-exact output, stderr apart, no pty without a terminal, the exit code, a background job |
 | `src/session.rs` | one command on its terminal, its frames to a sink: the server's own connection, or a link |
 | `src/mux.rs`     | a link's frames, and the outbox and inbox that number each direction of a session by offset, keep what was sent until acknowledged, pause a sender at its cap, and resend after a drop |
-| `src/link.rs`    | this server's links to other hosts: one ssh per target, its sessions, reconnecting with backoff, heartbeats, the idle close and the grace |
+| `src/link.rs`    | this server's links to other hosts: one TCP connection per host in `hosts`, its sessions, reconnecting with backoff, heartbeats, the idle close and the grace |
 | `src/hosted.rs`  | the sessions a server runs for links: detached, not ended, when a link drops, until a link attaches them or their grace runs out |
-| `tests/link.rs`  | two servers on one machine and a stand-in for ssh: sharing, a drop mid-output, a client gone, the grace, the idle close, output past the cap |
-| `src/proxy.rs`    | `delish proxy`: on the host, ssh's stdin and stdout joined to the local server, after a `READY` or `ERROR` |
+| `tests/link.rs`  | two servers on one machine, keys exchanged with the CLI, linked through a TCP relay of the test's that counts connections and cuts them: sharing, a drop mid-output, a client gone, the grace, the idle close, output past the cap, a wrong host key, an unauthorized client, ping |
 
 ## Testing on a real host
 
@@ -89,10 +90,14 @@ once its last user closes it.
 - No async runtime: a few threads per connection, blocking I/O.
 - One `delishd` process holds every session: a thread per connection, a pty and one child per session, never a
   fork of the server. Its exit ends them all; a helper process per session was judged not worth it.
-- ssh always starts from the desktop session when a local server runs: the link's ssh runs with the server's
-  environment, not the caller's, so anything it needs from the caller (`DELISH_REMOTE_COMMAND`) goes in the request.
-- Never hang: whatever cannot work (no server, Windows' `ssh.exe` in session 0) refuses at once with why.
-- Dependencies stay few: `libc` on unix, `windows-sys` and `uds_windows` on Windows.
-- Through ssh the command goes in the spawn frame, never in ssh's command line: the host's shell only ever runs
-  `delish proxy`.
+- delish is a peer of ssh, not a layer on it: servers reach each other over their own TCP port, with their own keys,
+  and never run another program to get there.
+- Links start from the server, with the server's environment, not the caller's: anything it needs from the caller
+  goes in the request.
+- Never hang: whatever cannot work (no server, an unknown host, a refused key) refuses at once with why.
+- Dependencies stay few: `snow`, with only the features of delish's one pattern (and `curve25519-dalek`, already
+  its), `libc` on unix, `windows-sys` and `uds_windows` on Windows.
+- The command goes in the spawn frame, never as a command line for any shell but the host's login shell.
+- A test that needs a port asks for port 0 and reads the one it got: a free port found and let go can be another
+  parallel test's by the time it is bound.
 - A command is never killed once it has been waited on: its pid may be another process's by then.

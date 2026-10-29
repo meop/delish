@@ -1,4 +1,4 @@
-//! A link: one connection between two servers that carries many sessions, and outlives a drop of the ssh under it.
+//! A link: one connection between two servers that carries many sessions, and outlives a drop of the TCP under it.
 //! Each direction of a session is a byte stream of ordinary frames, numbered by offset, kept by its sender until the
 //! other side acknowledges it, so a link that drops and comes back resends what did not arrive and nothing twice.
 //! A sender whose unacknowledged bytes reach its cap waits: a command writing faster than the link carries it is

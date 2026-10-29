@@ -1,6 +1,6 @@
 [package]
 name = "delish"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 license = "MIT"
 
@@ -13,6 +13,12 @@ path = "src/bin/delish.rs"
 [[bin]]
 name = "delishd"
 path = "src/bin/delishd.rs"
+
+[dependencies]
+# the noise protocol, with only what delish's pattern uses: x25519, chacha20-poly1305, blake2s, and the os's randomness
+snow = { version = "0.10.0", default-features = false, features = ["use-curve25519", "use-chacha20poly1305", "use-blake2", "use-getrandom"] }
+# already snow's, for a private key's public half
+curve25519-dalek = { version = "4.1.3", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.191"

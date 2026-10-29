@@ -1,65 +1,59 @@
-//! This server's links to other hosts' servers: one ssh connection per target, carrying every session this server's
-//! clients have there, kept a while after the last ends, and brought back after a drop with no more than a pause seen.
+//! This server's links to other hosts' servers: one TCP connection per host, each side's key proved, carrying every
+//! session this server's clients have there, kept a while after the last ends, and brought back after a drop with no
+//! more than a pause seen.
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
-use std::process::{Child, ChildStdout, Command, Stdio};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::hosted::{DEAD_AFTER, PING_EVERY, grace, seconds};
+use crate::keys;
 use crate::mux::{self, Inbox, Outbox, Sid};
+use crate::noise;
 use crate::proto::{self, Hello};
 use crate::server::log;
 use crate::sock::Stream;
-use crate::ssh;
 
 /// how much a client may type ahead of what the other end has acknowledged
 const IN_CAP: usize = 1 << 20;
 
-/// what `delish <host>` asks its own server for: ssh's options and host, what runs there to reach that host's
-/// server, and the session's spawn
+/// what `delish <host>` asks its own server for: the host, by name or address, and the session's spawn
 #[derive(Debug, PartialEq, Eq)]
 pub struct Request {
-    pub args: Vec<String>,
-    pub remote: String,
+    pub host: String,
     pub spawn: Vec<u8>,
 }
 
 impl Request {
     pub fn encode(&self) -> Vec<u8> {
-        let mut b = (self.args.len() as u32).to_le_bytes().to_vec();
-        for a in self.args.iter().chain([&self.remote]) {
-            b.extend_from_slice(&(a.len() as u32).to_le_bytes());
-            b.extend_from_slice(a.as_bytes());
-        }
+        let mut b = (self.host.len() as u32).to_le_bytes().to_vec();
+        b.extend_from_slice(self.host.as_bytes());
         b.extend_from_slice(&self.spawn);
         b
     }
 
     pub fn decode(b: &[u8]) -> io::Result<Self> {
         let bad = || io::Error::new(io::ErrorKind::InvalidData, "short remote request");
-        let mut at = 0;
-        let mut take = |n: usize| -> io::Result<&[u8]> {
-            let s = b.get(at..at + n).ok_or_else(bad)?;
-            at += n;
-            Ok(s)
-        };
-        let count = u32::from_le_bytes(take(4)?.try_into().unwrap()) as usize;
-        let mut strings = Vec::new();
-        for _ in 0..=count {
-            let len = u32::from_le_bytes(take(4)?.try_into().unwrap()) as usize;
-            strings.push(String::from_utf8(take(len)?.to_vec()).map_err(|_| bad())?);
-        }
-        let remote = strings.pop().unwrap_or_default();
+        let len = u32::from_le_bytes(b.get(..4).ok_or_else(bad)?.try_into().unwrap()) as usize;
+        let host = b.get(4..4 + len).ok_or_else(bad)?;
         Ok(Request {
-            args: strings,
-            remote,
-            spawn: b[at..].to_vec(),
+            host: String::from_utf8(host.to_vec()).map_err(|_| bad())?,
+            spawn: b[4 + len..].to_vec(),
         })
     }
+}
+
+/// the host a name or an address in `hosts` stands for
+pub fn resolve(name: &str) -> Option<keys::Host> {
+    let all = keys::hosts();
+    all.iter().find(|h| h.name == name).cloned().or_else(|| {
+        all.into_iter()
+            .find(|h| keys::with_port(&h.address) == keys::with_port(name))
+    })
 }
 
 type Writer = Arc<Mutex<Box<dyn Write + Send>>>;
@@ -93,9 +87,7 @@ struct State {
 }
 
 struct Link {
-    host: String,
-    target: ssh::Target,
-    remote: String,
+    host: keys::Host,
     state: Mutex<State>,
     changed: Condvar,
 }
@@ -105,8 +97,8 @@ fn links() -> &'static Mutex<HashMap<String, Arc<Link>>> {
     L.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn link_for(target: ssh::Target, remote: String) -> Arc<Link> {
-    let key = format!("{}\0{}\0{}", target.options.join("\0"), target.host, remote);
+fn link_for(host: keys::Host) -> Arc<Link> {
+    let key = host.name.clone();
     let mut all = links().lock().unwrap();
     if let Some(l) = all.get(&key)
         && !l.state.lock().unwrap().closing
@@ -114,9 +106,7 @@ fn link_for(target: ssh::Target, remote: String) -> Arc<Link> {
         return l.clone();
     }
     let l = Arc::new(Link {
-        host: target.host.clone(),
-        target,
-        remote,
+        host,
         state: Mutex::new(State::default()),
         changed: Condvar::new(),
     });
@@ -174,17 +164,17 @@ impl Link {
         let mut down_since: Option<Instant> = None;
         loop {
             match self.connect() {
-                Ok((child, stdout, w)) => {
+                Ok((killer, reader, w)) => {
                     backoff = Duration::from_millis(500);
                     down_since = None;
-                    self.carry(child, stdout, w);
+                    self.carry(killer, reader, w);
                 }
                 Err(e) => {
                     if !self.state.lock().unwrap().up_once {
-                        self.fail_all(&format!("{}: {e}", self.host));
+                        self.fail_all(&format!("{}: {e}", self.host.name));
                         return;
                     }
-                    log(&format!("link to {}: {e}", self.host));
+                    log(&format!("link to {}: {e}", self.host.name));
                 }
             }
             if self.state.lock().unwrap().clients.is_empty() {
@@ -195,7 +185,7 @@ impl Link {
             if since.elapsed() > grace() {
                 self.fail_all(&format!(
                     "the connection to {} was lost and did not come back",
-                    self.host
+                    self.host.name
                 ));
                 return;
             }
@@ -215,103 +205,56 @@ impl Link {
         self.changed.notify_all();
     }
 
-    /// ssh to the host, to its server, and that server agreeing to a link
-    fn connect(&self) -> io::Result<(Child, ChildStdout, Writer)> {
-        let program = std::env::var("DELISH_SSH").unwrap_or_else(|_| "ssh".into());
-        let mut args = vec!["-o".to_string(), "BatchMode=yes".to_string()];
-        args.extend(ssh::argv(&self.target, &self.remote));
-        let mut child = Command::new(program)
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        let mut stdout = child.stdout.take().unwrap();
-        let mut stderr = child.stderr.take().unwrap();
-        let said = Arc::new(Mutex::new(Vec::new()));
-        {
-            let said = said.clone();
-            thread::spawn(move || {
-                let mut buf = [0u8; 4096];
-                while let Ok(n) = stderr.read(&mut buf) {
-                    if n == 0 {
-                        break;
-                    }
-                    let mut s = said.lock().unwrap();
-                    s.extend_from_slice(&buf[..n]);
-                    let over = s.len().saturating_sub(4096);
-                    s.drain(..over);
-                }
-            });
-        }
-        let w: Writer = Arc::new(Mutex::new(Box::new(child.stdin.take().unwrap())));
-        let refused = |child: &mut Child, why: String| {
-            let _ = child.kill();
-            let _ = child.wait();
-            thread::sleep(Duration::from_millis(50));
-            let ssh_said = String::from_utf8_lossy(&said.lock().unwrap())
-                .trim()
-                .to_string();
-            io::Error::other(if ssh_said.is_empty() {
-                why
-            } else {
-                format!("{why}: {ssh_said}")
-            })
-        };
-        loop {
-            match proto::read_frame(&mut stdout) {
-                Ok(Some((proto::READY, _))) => {}
-                Ok(Some((proto::HELLO, payload))) => {
-                    let hello = Hello::decode(&payload)?;
-                    if hello.protocol != proto::PROTOCOL {
-                        return Err(refused(
-                            &mut child,
-                            format!(
-                                "delishd there is {} and speaks protocol {}, this delish {} protocol {}: update delish on both machines, then restart delishd",
-                                hello.version,
-                                hello.protocol,
-                                proto::VERSION,
-                                proto::PROTOCOL
-                            ),
-                        ));
-                    }
-                    break;
-                }
-                Ok(Some((proto::ERROR, msg))) => {
-                    return Err(refused(
-                        &mut child,
-                        String::from_utf8_lossy(&msg).into_owned(),
-                    ));
-                }
-                Ok(_) | Err(_) => {
-                    return Err(refused(
-                        &mut child,
-                        "the connection closed before its server answered".into(),
-                    ));
-                }
+    /// the host's server over TCP, each side's key proved to the other, and that server agreeing to a link
+    fn connect(&self) -> io::Result<(TcpStream, noise::Reader, Writer)> {
+        let address = keys::with_port(&self.host.address);
+        let addrs: Vec<_> = address.to_socket_addrs()?.collect();
+        let mut tcp = Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("no address for {address}"),
+        ));
+        for a in &addrs {
+            tcp = TcpStream::connect_timeout(a, Duration::from_secs(5));
+            if tcp.is_ok() {
+                break;
             }
         }
-        proto::write_frame(
-            &mut *w.lock().unwrap(),
-            proto::LINK,
-            &proto::PROTOCOL.to_le_bytes(),
-        )?;
-        match proto::read_frame(&mut stdout) {
-            Ok(Some((proto::LINK, _))) => Ok((child, stdout, w)),
-            Ok(Some((proto::ERROR, msg))) => Err(refused(
-                &mut child,
-                String::from_utf8_lossy(&msg).into_owned(),
-            )),
-            _ => Err(refused(
-                &mut child,
-                "the server there would not take a link".into(),
-            )),
+        let tcp =
+            tcp.map_err(|e| io::Error::new(e.kind(), format!("cannot reach {address}: {e}")))?;
+        let _ = tcp.set_nodelay(true);
+        let killer = tcp.try_clone()?;
+        let (private, _) = keys::mine()?;
+        let (mut reader, mut writer, _) = noise::initiate(tcp, &private, |k| *k == self.host.key)?;
+        match proto::read_frame(&mut reader)? {
+            Some((proto::HELLO, payload)) => {
+                let hello = Hello::decode(&payload)?;
+                if hello.protocol != proto::PROTOCOL {
+                    return Err(io::Error::other(format!(
+                        "delishd there is {} and speaks protocol {}, this delish {} protocol {}: update delish on both machines, then restart delishd",
+                        hello.version,
+                        hello.protocol,
+                        proto::VERSION,
+                        proto::PROTOCOL
+                    )));
+                }
+            }
+            _ => return Err(io::Error::other("its server did not say hello")),
         }
+        proto::write_frame(&mut writer, proto::LINK, &proto::PROTOCOL.to_le_bytes())?;
+        match proto::read_frame(&mut reader)? {
+            Some((proto::LINK, _)) => {}
+            Some((proto::ERROR, msg)) => {
+                return Err(io::Error::other(String::from_utf8_lossy(&msg).into_owned()));
+            }
+            _ => return Err(io::Error::other("the server there would not take a link")),
+        }
+        let w: Writer = Arc::new(Mutex::new(Box::new(writer)));
+        Ok((killer, reader, w))
     }
 
     /// the link's frames until it drops, or closes idle
-    fn carry(self: &Arc<Self>, child: Child, mut stdout: ChildStdout, w: Writer) {
-        let child = Arc::new(Mutex::new(child));
+    fn carry(self: &Arc<Self>, killer: TcpStream, mut stdout: noise::Reader, w: Writer) {
+        let child = Arc::new(Mutex::new(killer));
         let generation = {
             let mut st = self.state.lock().unwrap();
             st.generation += 1;
@@ -326,7 +269,7 @@ impl Link {
             }
             g
         };
-        log(&format!("link to {} up", self.host));
+        log(&format!("link to {} up", self.host.name));
 
         let heard = Arc::new(Mutex::new(Instant::now()));
         let up = Arc::new(AtomicBool::new(true));
@@ -355,7 +298,7 @@ impl Link {
                         link.state.lock().unwrap().closing = true;
                     }
                     if idled || heard.lock().unwrap().elapsed() > DEAD_AFTER {
-                        let _ = child.lock().unwrap().kill();
+                        let _ = child.lock().unwrap().shutdown(std::net::Shutdown::Both);
                         return;
                     }
                     if pinged.elapsed() > PING_EVERY {
@@ -396,7 +339,7 @@ impl Link {
                     self.state.lock().unwrap().clients.remove(&f.sid);
                     c.fail(&format!(
                         "{}: {}",
-                        self.host,
+                        self.host.name,
                         String::from_utf8_lossy(&f.payload)
                     ));
                 }
@@ -412,10 +355,8 @@ impl Link {
             st.writer = None;
             st.generation += 1;
         }
-        let mut child = child.lock().unwrap();
-        let _ = child.kill();
-        let _ = child.wait();
-        log(&format!("link to {} down", self.host));
+        let _ = child.lock().unwrap().shutdown(std::net::Shutdown::Both);
+        log(&format!("link to {} down", self.host.name));
     }
 
     fn add(self: &Arc<Self>, sid: Sid, c: Arc<Client>) {
@@ -451,10 +392,16 @@ pub fn serve_client(mut stream: Stream, payload: &[u8]) -> io::Result<()> {
         Ok(r) => r,
         Err(e) => return refuse(&mut stream, &e.to_string()),
     };
-    let Some(target) = ssh::parse(&req.args) else {
-        return refuse(&mut stream, "no host to run on");
+    let Some(host) = resolve(&req.host) else {
+        return refuse(
+            &mut stream,
+            &format!(
+                "{} is not a known host: add it with delish trust <name> <address[:port]> <its delish key>",
+                req.host
+            ),
+        );
     };
-    let link = link_for(target, req.remote);
+    let link = link_for(host);
     let sid = mux::new_sid();
     let client = Arc::new(Client {
         stream: Mutex::new(stream.try_clone()?),
@@ -483,8 +430,7 @@ mod tests {
     #[test]
     fn a_remote_request_round_trips() {
         let r = Request {
-            args: vec!["-p".into(), "2222".into(), "--".into(), "u@glass".into()],
-            remote: "delish proxy".into(),
+            host: "glass".into(),
             spawn: vec![1, 2, 3],
         };
         assert_eq!(Request::decode(&r.encode()).unwrap(), r);
