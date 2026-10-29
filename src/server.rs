@@ -113,18 +113,19 @@ fn handle(mut stream: Stream) -> io::Result<()> {
     for mut reader in readers {
         let reader_out = out.clone();
         let drained = drained.clone();
+        let kind = if reader.stderr {
+            proto::STDERR
+        } else {
+            proto::OUTPUT
+        };
         thread::spawn(move || {
             let mut buf = [0u8; 16 * 1024];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
-                        if proto::write_frame(
-                            &mut *reader_out.lock().unwrap(),
-                            proto::OUTPUT,
-                            &buf[..n],
-                        )
-                        .is_err()
+                        if proto::write_frame(&mut *reader_out.lock().unwrap(), kind, &buf[..n])
+                            .is_err()
                         {
                             break;
                         }

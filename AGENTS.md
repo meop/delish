@@ -57,17 +57,17 @@ the `GPG_PRIVATE_KEY` and `GPG_PASSPHRASE` repository secrets. Never create the 
 
 | file              | what it is                                                                                 |
 | ----------------- | ------------------------------------------------------------------------------------------ |
-| `src/proto.rs`    | the wire format: frames of kind byte + u32 LE length + payload; one connection, one command. the server's first frame is `HELLO` (protocol, version) and the client's `SPAWN`, which starts with the protocol: size, login flag, whether the client's stdin and stdout are terminals, cwd, argv, env; then `INPUT`, `RESIZE` and, for a stdin that is not a terminal, `EOF`. `PROTOCOL` goes up with any change to a frame or payload. `READY` and `ERROR` from the proxy come before any of it and never change shape |
+| `src/proto.rs`    | the wire format: frames of kind byte + u32 LE length + payload; one connection, one command. the server's first frame is `HELLO` (protocol, version) and the client's `SPAWN`, which starts with the protocol: size, login flag, whether each of the client's stdin, stdout and stderr is a terminal, cwd, argv, env; then `INPUT`, `RESIZE` and, for a stdin that is not a terminal, `EOF`; from the server, `OUTPUT` (the terminal, or stdout) and `STDERR` (stderr, when it is not the terminal). `PROTOCOL` goes up with any change to a frame or payload. `READY` and `ERROR` from the proxy come before any of it and never change shape |
 | `src/sock.rs`     | the socket path and its permissions; `std` unix sockets, `uds_windows` on Windows          |
-| `src/pty/unix.rs` | `openpty`, the child in its own session with the pty as its controlling terminal; a pipe for its stdin or stdout where the client's is not a terminal; readers that a stop ends |
-| `src/pty/windows.rs` | ConPTY from kernel32 (the console's own; nothing side-loaded)                          |
+| `src/pty/unix.rs` | `openpty` for the streams the client has a terminal for and none without, the child in its own session with the pty as its controlling terminal; a pipe for each other stream; readers that a stop ends |
+| `src/pty/windows.rs` | ConPTY from kernel32 (the console's own; nothing side-loaded) for the streams the client has a terminal for, a hidden console without; a pipe for each other stream |
 | `src/cmdline.rs`  | a Windows command line from argv: the C runtime's quoting, or std's for a batch file through `cmd.exe`; plain strings, tested everywhere |
 | `src/shell.rs`    | the login shell: the account's with `-l` on unix, OpenSSH's `DefaultShell` on Windows    |
 | `src/term.rs`     | the client's terminal: size, and raw mode while a command runs                             |
 | `src/server.rs`   | `delishd`: one thread per connection, the command's outputs out, its exit code last, the terminal closed after it; the log, with programs and no arguments, rotated; refuses to start elevated, as root, or in session 0 |
 | `src/client.rs`   | `delish run`, `shell`, `<host>` and `hop`: keys and resizes in, output out, the command's exit code as its own; to the local socket, or to ssh's stdin and stdout. `<host>` with a local server running hands itself to it as `delish hop --remote-command <cmd> <ssh args>`, which calls ssh; without one it calls ssh itself, except in a Windows ssh login (session 0), where it refuses |
 | `src/ssh.rs`      | `delish <host>`: ssh's options and the host from the arguments, and the `ssh -T` command line |
-| `tests/unix.rs`  | end to end against a real `delishd`: piped stdin's end, byte-exact output, the exit code, a background job |
+| `tests/unix.rs`  | end to end against a real `delishd`: piped stdin's end, byte-exact output, stderr apart, no pty without a terminal, the exit code, a background job |
 | `src/proxy.rs`    | `delish proxy`: on the host, ssh's stdin and stdout joined to the local server, after a `READY` or `ERROR` |
 
 ## Conventions

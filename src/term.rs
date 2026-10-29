@@ -3,7 +3,7 @@
 
 use crate::proto::Size;
 
-pub use os::{Raw, is_tty, size, stdout_is_tty};
+pub use os::{Raw, is_tty, size, stderr_is_tty, stdout_is_tty};
 
 #[cfg(unix)]
 mod os {
@@ -15,6 +15,10 @@ mod os {
 
     pub fn stdout_is_tty() -> bool {
         unsafe { libc::isatty(1) == 1 }
+    }
+
+    pub fn stderr_is_tty() -> bool {
+        unsafe { libc::isatty(2) == 1 }
     }
 
     pub fn size() -> Option<Size> {
@@ -64,7 +68,7 @@ mod os {
         CONSOLE_MODE, CONSOLE_SCREEN_BUFFER_INFO, DISABLE_NEWLINE_AUTO_RETURN, ENABLE_ECHO_INPUT,
         ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT, ENABLE_VIRTUAL_TERMINAL_INPUT,
         ENABLE_VIRTUAL_TERMINAL_PROCESSING, GetConsoleMode, GetConsoleScreenBufferInfo,
-        GetStdHandle, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetConsoleMode,
+        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetConsoleMode,
     };
 
     pub fn is_tty() -> bool {
@@ -75,6 +79,11 @@ mod os {
     pub fn stdout_is_tty() -> bool {
         let mut mode: CONSOLE_MODE = 0;
         unsafe { GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &mut mode) != 0 }
+    }
+
+    pub fn stderr_is_tty() -> bool {
+        let mut mode: CONSOLE_MODE = 0;
+        unsafe { GetConsoleMode(GetStdHandle(STD_ERROR_HANDLE), &mut mode) != 0 }
     }
 
     pub fn size() -> Option<Size> {

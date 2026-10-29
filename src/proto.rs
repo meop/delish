@@ -23,9 +23,11 @@ pub const ERROR: u8 = 12;
 pub const READY: u8 = 13;
 /// server → client, first: the protocol it speaks and its version
 pub const HELLO: u8 = 14;
+/// server → client: bytes the command wrote to its stderr, when that is not the terminal
+pub const STDERR: u8 = 15;
 
 /// the frames and their payloads; a change to either is a new protocol
-pub const PROTOCOL: u32 = 2;
+pub const PROTOCOL: u32 = 3;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const MAX_FRAME: u32 = 16 << 20;
@@ -119,9 +121,10 @@ impl Size {
 pub struct Spawn {
     pub size: Size,
     pub login: bool,
-    /// whether the client's stdin and stdout are terminals: one that is not is a pipe for the command too
+    /// whether the client's stdin, stdout and stderr are terminals: one that is not is a pipe for the command too
     pub stdin_tty: bool,
     pub stdout_tty: bool,
+    pub stderr_tty: bool,
     pub cwd: String,
     pub argv: Vec<String>,
     pub env: Vec<(String, String)>,
@@ -132,7 +135,7 @@ impl Spawn {
         let mut b = PROTOCOL.to_le_bytes().to_vec();
         b.extend_from_slice(&self.size.encode());
         b.push(self.login as u8);
-        b.push(self.stdin_tty as u8 | (self.stdout_tty as u8) << 1);
+        b.push(self.stdin_tty as u8 | (self.stdout_tty as u8) << 1 | (self.stderr_tty as u8) << 2);
         put_str(&mut b, &self.cwd);
         b.extend_from_slice(&(self.argv.len() as u32).to_le_bytes());
         for a in &self.argv {
@@ -188,6 +191,7 @@ impl Spawn {
             login,
             stdin_tty: ttys & 1 != 0,
             stdout_tty: ttys & 2 != 0,
+            stderr_tty: ttys & 4 != 0,
             cwd,
             argv,
             env,
@@ -233,6 +237,7 @@ mod tests {
             login: false,
             stdin_tty: true,
             stdout_tty: true,
+            stderr_tty: true,
             cwd: "/home/x".into(),
             argv: vec!["nu".into(), "-c".into(), "print ünï".into()],
             env: vec![("TERM".into(), "xterm-256color".into())],
@@ -241,14 +246,15 @@ mod tests {
     }
 
     #[test]
-    fn whether_stdin_and_stdout_are_terminals_round_trips() {
-        for (stdin_tty, stdout_tty) in [(true, true), (false, true), (true, false), (false, false)]
-        {
+    fn whether_each_stream_is_a_terminal_round_trips() {
+        for bits in 0..8u8 {
+            let (stdin_tty, stdout_tty, stderr_tty) = (bits & 1 != 0, bits & 2 != 0, bits & 4 != 0);
             let s = Spawn {
                 size: Size { rows: 1, cols: 1 },
                 login: true,
                 stdin_tty,
                 stdout_tty,
+                stderr_tty,
                 cwd: String::new(),
                 argv: vec![],
                 env: vec![],
@@ -272,6 +278,7 @@ mod tests {
             login: true,
             stdin_tty: true,
             stdout_tty: true,
+            stderr_tty: true,
             cwd: String::new(),
             argv: vec![],
             env: vec![],
@@ -303,6 +310,7 @@ mod tests {
             login: false,
             stdin_tty: true,
             stdout_tty: true,
+            stderr_tty: true,
             cwd: String::new(),
             argv: vec![],
             env: vec![],
@@ -317,6 +325,7 @@ mod tests {
             login: true,
             stdin_tty: true,
             stdout_tty: true,
+            stderr_tty: true,
             cwd: String::new(),
             argv,
             env: vec![],

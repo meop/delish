@@ -13,12 +13,14 @@ use crate::proto::{Size, Spawn};
 pub struct Reader {
     file: File,
     stop: Arc<AtomicBool>,
+    /// what it reads is the command's stderr alone, rather than its terminal or its stdout
+    pub stderr: bool,
 }
 
 pub struct Writer(Option<File>);
 
 pub struct Control {
-    master: File,
+    master: Option<File>,
     pid: i32,
     child: Mutex<Option<Child>>,
     done: Arc<AtomicBool>,
@@ -42,8 +44,8 @@ fn cloexec(fd: i32) -> io::Result<()> {
     Ok(())
 }
 
-pub fn spawn(s: &Spawn) -> io::Result<(Vec<Reader>, Writer, Control)> {
-    let mut ws = winsize(s.size);
+fn openpty(size: Size) -> io::Result<(OwnedFd, OwnedFd)> {
+    let mut ws = winsize(size);
     let (mut m, mut sl) = (-1, -1);
     if unsafe {
         libc::openpty(
@@ -58,10 +60,20 @@ pub fn spawn(s: &Spawn) -> io::Result<(Vec<Reader>, Writer, Control)> {
     {
         return Err(io::Error::last_os_error());
     }
-    let master = unsafe { OwnedFd::from_raw_fd(m) };
-    let slave = unsafe { OwnedFd::from_raw_fd(sl) };
+    let (master, slave) = unsafe { (OwnedFd::from_raw_fd(m), OwnedFd::from_raw_fd(sl)) };
     cloexec(m)?;
     cloexec(sl)?;
+    Ok((master, slave))
+}
+
+/// a pty for the streams the client has a terminal for, and none when it has none; a pipe for each of the others
+pub fn spawn(s: &Spawn) -> io::Result<(Vec<Reader>, Writer, Control)> {
+    let ttys = [s.stdin_tty, s.stdout_tty, s.stderr_tty];
+    let pty = if ttys.contains(&true) {
+        Some(openpty(s.size)?)
+    } else {
+        None
+    };
 
     let mut cmd = Command::new(&s.argv[0]);
     cmd.args(&s.argv[1..]);
@@ -72,31 +84,49 @@ pub fn spawn(s: &Spawn) -> io::Result<(Vec<Reader>, Writer, Control)> {
     };
     cmd.current_dir(cwd);
     cmd.envs(s.env.iter().map(|(k, v)| (k, v)));
+
+    let slave = |pty: &Option<(OwnedFd, OwnedFd)>| -> io::Result<Stdio> {
+        Ok(Stdio::from(
+            pty.as_ref()
+                .expect("a pty for a terminal stream")
+                .1
+                .try_clone()?,
+        ))
+    };
     let mut input = None;
     if s.stdin_tty {
-        cmd.stdin(Stdio::from(slave.try_clone()?));
+        cmd.stdin(slave(&pty)?);
     } else {
         let (read, write) = std::io::pipe()?;
         cmd.stdin(read);
         input = Some(File::from(OwnedFd::from(write)));
     }
-    let mut piped_out = None;
+    let (mut out_pipe, mut err_pipe) = (None, None);
     if s.stdout_tty {
-        cmd.stdout(Stdio::from(slave.try_clone()?));
+        cmd.stdout(slave(&pty)?);
     } else {
         let (read, write) = std::io::pipe()?;
         cmd.stdout(write);
-        piped_out = Some(File::from(OwnedFd::from(read)));
+        out_pipe = Some(File::from(OwnedFd::from(read)));
     }
-    cmd.stderr(Stdio::from(slave));
-    // its own session, with the pty as its controlling terminal: job control, ^C and SIGWINCH reach it as they would
-    // from a terminal window. stderr is the pty by the time this runs, whatever stdin and stdout are
+    if s.stderr_tty {
+        cmd.stderr(slave(&pty)?);
+    } else {
+        let (read, write) = std::io::pipe()?;
+        cmd.stderr(write);
+        err_pipe = Some(File::from(OwnedFd::from(read)));
+    }
+    // its own session, so it and what it starts end together, and with a pty, that as its controlling terminal: job
+    // control, ^C and SIGWINCH reach it as they would from a terminal window. the fd is the first stream on the pty
+    let ctty = ttys.iter().position(|&t| t).map(|fd| fd as i32);
     unsafe {
-        cmd.pre_exec(|| {
+        cmd.pre_exec(move || {
             if libc::setsid() < 0 {
                 return Err(io::Error::last_os_error());
             }
-            if libc::ioctl(2, libc::TIOCSCTTY as _, 0) < 0 {
+            if let Some(fd) = ctty
+                && libc::ioctl(fd, libc::TIOCSCTTY as _, 0) < 0
+            {
                 return Err(io::Error::last_os_error());
             }
             Ok(())
@@ -105,19 +135,25 @@ pub fn spawn(s: &Spawn) -> io::Result<(Vec<Reader>, Writer, Control)> {
     let child = cmd.spawn()?;
     // the slave's copies go with the command: once the child's are gone too, a read of the master ends
     drop(cmd);
+    let master = pty.map(|(master, _slave)| File::from(master));
 
-    let master = File::from(master);
     let stop = Arc::new(AtomicBool::new(false));
-    let reader = |file| Reader {
+    let reader = |file, stderr| Reader {
         file,
         stop: stop.clone(),
+        stderr,
     };
-    let mut readers = vec![reader(master.try_clone()?)];
-    readers.extend(piped_out.map(reader));
-    let writer = Writer(Some(match input {
-        Some(pipe) => pipe,
-        None => master.try_clone()?,
-    }));
+    let mut readers = Vec::new();
+    // the terminal's bytes go back on the client's terminal: its stdout when that is one, else its stderr
+    if let Some(m) = &master {
+        readers.push(reader(m.try_clone()?, !s.stdout_tty));
+    }
+    readers.extend(out_pipe.map(|f| reader(f, false)));
+    readers.extend(err_pipe.map(|f| reader(f, true)));
+    let writer = Writer(match input {
+        Some(pipe) => Some(pipe),
+        None => master.as_ref().map(File::try_clone).transpose()?,
+    });
     let pid = child.id() as i32;
     Ok((
         readers,
@@ -178,8 +214,11 @@ impl Write for Writer {
 
 impl Control {
     pub fn resize(&self, size: Size) -> io::Result<()> {
+        let Some(master) = &self.master else {
+            return Ok(());
+        };
         let ws = winsize(size);
-        if unsafe { libc::ioctl(self.master.as_raw_fd(), libc::TIOCSWINSZ as _, &ws) } < 0 {
+        if unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ as _, &ws) } < 0 {
             return Err(io::Error::last_os_error());
         }
         Ok(())

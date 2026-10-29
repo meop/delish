@@ -69,9 +69,11 @@ not the one the hop uses, when a local server is running.
   output the other. Its exit code is the command's.
 - The command runs on a pty: `openpty` on Linux and macOS, the console's own ConPTY on Windows. It gets the server's
   environment, which is the desktop session's.
-- Where the client's stdin or stdout is not a terminal (`delish host cmd < in > out`), the command's is a pipe, as
-  with `ssh` without `-t`: piped input ends when the client's does and is not echoed back, and output to a file is
-  byte for byte, with no `\r` before each `\n`. The pty stays the command's terminal and its stderr.
+- Each of the client's stdin, stdout and stderr that is not a terminal (`delish host cmd < in > out 2> err`) is a
+  pipe for the command too, as with `ssh` without `-t`: piped input ends when the client's does and is not echoed
+  back, output to a file is byte for byte, with no `\r` before each `\n`, and stderr comes back on the client's
+  stderr. The streams that are terminals share the command's pty, whose bytes come back on the client's terminal; with
+  none, there is no pty at all (and on Windows no ConPTY), as with `ssh -T`.
 - When the command has exited, its terminal is closed after at most two seconds, as sshd closes a session's: a
   background job still holding it gets the hangup a closed window gives, rather than keeping the session open.
 - A client that goes away takes its command with it, as a closed terminal does. Over `ssh -t`, dropping the
@@ -86,7 +88,7 @@ not the one the hop uses, when a local server is running.
 ## Notes
 
 - On Windows, ConPTY writes its own terminal setup sequences (a screen clear, the window title, mouse and focus
-  modes) to the terminal, so a command's output redirected to a file holds them too, though its stdout is a pipe.
+  modes) to the console: they reach the client's terminal, never a stream it redirected.
 - PowerShell's `-c` exits 1 for any native command that failed, whatever its code: end a remote PowerShell command
   with `; exit $LASTEXITCODE` to pass the code through a Windows host.
 - On macOS, `delishd` runs in the Aqua session, where privacy permissions apply to it: macOS asks once for Local

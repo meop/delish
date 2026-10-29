@@ -232,6 +232,7 @@ fn spawn(argv: Vec<String>, login: bool, cwd: String) -> Spawn {
         login,
         stdin_tty: term::is_tty(),
         stdout_tty: term::stdout_is_tty(),
+        stderr_tty: term::stderr_is_tty(),
         cwd,
         argv,
         env,
@@ -288,6 +289,11 @@ fn relay(
             Some((proto::OUTPUT, bytes)) => {
                 stdout.write_all(&bytes)?;
                 stdout.flush()?;
+            }
+            Some((proto::STDERR, bytes)) => {
+                let mut stderr = io::stderr().lock();
+                stderr.write_all(&bytes)?;
+                stderr.flush()?;
             }
             Some((proto::EXIT, payload)) if payload.len() >= 4 => {
                 break End::Exit(i32::from_le_bytes([
