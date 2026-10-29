@@ -16,6 +16,7 @@ use crate::sock::{self, Stream};
 /// a line in ~/.delish/delishd.log: the server has no terminal to say it on
 pub fn log(msg: &str) {
     let path = sock::dir().join("delishd.log");
+    rotate(&path, LOG_LIMIT);
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -27,6 +28,26 @@ pub fn log(msg: &str) {
             .unwrap_or(0);
         let _ = writeln!(f, "{now} {msg}");
     }
+}
+
+const LOG_LIMIT: u64 = 1 << 20;
+
+/// a log past limit starts again, the one before kept beside it as .1
+fn rotate(path: &std::path::Path, limit: u64) {
+    if std::fs::metadata(path).is_ok_and(|m| m.len() > limit) {
+        let _ = std::fs::rename(path, path.with_extension("log.1"));
+    }
+}
+
+/// what the log says a command is: its program, never its arguments, which can carry what is not the log's to keep
+fn program(argv: &[String]) -> String {
+    argv.first()
+        .map(|p| {
+            std::path::Path::new(p)
+                .file_name()
+                .map_or(p.clone(), |n| n.to_string_lossy().into_owned())
+        })
+        .unwrap_or_default()
 }
 
 pub fn serve() -> io::Result<()> {
@@ -74,41 +95,45 @@ fn handle(mut stream: Stream) -> io::Result<()> {
     if spawn.login {
         spawn.argv = shell::login_argv(spawn.argv.first().map(String::as_str));
     }
-    let (mut reader, mut writer, control) = match pty::spawn(&spawn) {
+    let (readers, mut writer, control) = match pty::spawn(&spawn) {
         Ok(p) => p,
         Err(e) => {
             let msg = format!("could not run {:?}: {e}", spawn.argv[0]);
-            log(&msg);
+            log(&format!("could not run {}: {e}", program(&spawn.argv)));
             return proto::write_frame(&mut stream, proto::ERROR, msg.as_bytes());
         }
     };
-    log(&format!("running {:?}", spawn.argv));
+    log(&format!("running {}", program(&spawn.argv)));
     let control = Arc::new(control);
     let out = Arc::new(Mutex::new(stream.try_clone()?));
 
-    // the terminal's output, as it comes
+    // the command's output, as it comes, from the terminal and from stdout when that is a pipe
     let (drained, read_done) = mpsc::channel::<()>();
-    let reader_out = out.clone();
-    thread::spawn(move || {
-        let mut buf = [0u8; 16 * 1024];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    if proto::write_frame(
-                        &mut *reader_out.lock().unwrap(),
-                        proto::OUTPUT,
-                        &buf[..n],
-                    )
-                    .is_err()
-                    {
-                        break;
+    let outputs = readers.len();
+    for mut reader in readers {
+        let reader_out = out.clone();
+        let drained = drained.clone();
+        thread::spawn(move || {
+            let mut buf = [0u8; 16 * 1024];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if proto::write_frame(
+                            &mut *reader_out.lock().unwrap(),
+                            proto::OUTPUT,
+                            &buf[..n],
+                        )
+                        .is_err()
+                        {
+                            break;
+                        }
                     }
                 }
             }
-        }
-        let _ = drained.send(());
-    });
+            let _ = drained.send(());
+        });
+    }
 
     // the command's end: what it wrote last goes out before its exit code, and the connection closes after
     let waiter_control = control.clone();
@@ -120,8 +145,16 @@ fn handle(mut stream: Stream) -> io::Result<()> {
         let code = waiter_control.wait().unwrap_or(255);
         waiter_ended.store(true, Ordering::SeqCst);
         waiter_control.close();
-        // a background process still holding the terminal would keep it open forever: the wait for it is bounded
-        let _ = read_done.recv_timeout(Duration::from_secs(2));
+        // a background process still holding the terminal would keep it open forever: the wait for it is bounded,
+        // and then the readers stop, so the terminal closes under it as a closed window's does
+        let until = std::time::Instant::now() + Duration::from_secs(2);
+        for _ in 0..outputs {
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            if read_done.recv_timeout(left).is_err() {
+                break;
+            }
+        }
+        waiter_control.stop();
         let _ = proto::write_frame(
             &mut *waiter_out.lock().unwrap(),
             proto::EXIT,
@@ -137,6 +170,7 @@ fn handle(mut stream: Stream) -> io::Result<()> {
             Ok(Some((proto::INPUT, bytes))) => {
                 let _ = writer.write_all(&bytes);
             }
+            Ok(Some((proto::EOF, _))) => writer.close(),
             Ok(Some((proto::RESIZE, payload))) => {
                 if let Ok(size) = Size::decode(&payload) {
                     let _ = control.resize(size);
@@ -151,7 +185,7 @@ fn handle(mut stream: Stream) -> io::Result<()> {
         control.kill();
     }
     let code = waiter.join().unwrap_or(255);
-    log(&format!("{:?} exited {code}", spawn.argv));
+    log(&format!("{} exited {code}", program(&spawn.argv)));
     Ok(())
 }
 
@@ -215,4 +249,36 @@ fn session_check() -> io::Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_log_names_a_program_and_none_of_its_arguments() {
+        let argv = ["/bin/zsh", "-l", "-c", "curl -H 'token: secret'"].map(String::from);
+        assert_eq!(program(&argv), "zsh");
+        assert_eq!(program(&[]), "");
+    }
+
+    #[test]
+    fn a_log_past_its_limit_starts_again_with_the_last_one_kept() {
+        let dir = std::env::temp_dir().join(format!("delish-log-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("delishd.log");
+        std::fs::write(&path, "x".repeat(11)).unwrap();
+        rotate(&path, 20);
+        assert!(path.exists(), "a log under its limit was rotated");
+        rotate(&path, 10);
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("delishd.log.1"))
+                .unwrap()
+                .len(),
+            11
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

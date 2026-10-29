@@ -34,27 +34,62 @@ pub fn connect() -> io::Result<Stream> {
 
 /// a socket left by a server that is gone is taken over; one a live server answers on is not
 pub fn listen() -> io::Result<Listener> {
-    let path = path();
+    listen_at(&path(), &dir())
+}
+
+/// only delish's own directory is made its user's alone: one DELISH_SOCKET names is somebody's to keep as it is
+#[cfg_attr(windows, allow(unused_variables))]
+fn listen_at(path: &std::path::Path, own: &std::path::Path) -> io::Result<Listener> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
         #[cfg(unix)]
-        {
+        if parent == own {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
         }
     }
-    if Stream::connect(&path).is_ok() {
+    if Stream::connect(path).is_ok() {
         return Err(io::Error::new(
             io::ErrorKind::AddrInUse,
             format!("a delishd already listens on {}", path.display()),
         ));
     }
-    let _ = std::fs::remove_file(&path);
-    let listener = Listener::bind(&path)?;
+    let _ = std::fs::remove_file(path);
+    let listener = Listener::bind(path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     }
     Ok(listener)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn mode(p: &std::path::Path) -> u32 {
+        std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn only_delishs_own_directory_is_made_private() {
+        let root = std::env::temp_dir().join(format!("delish-sock-{}", std::process::id()));
+        let (own, shared) = (root.join(".delish"), root.join("shared"));
+        for d in [&own, &shared] {
+            std::fs::create_dir_all(d).unwrap();
+            std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        drop(listen_at(&shared.join("x.sock"), &own).unwrap());
+        assert_eq!(
+            mode(&shared),
+            0o755,
+            "a directory DELISH_SOCKET named was changed"
+        );
+        drop(listen_at(&own.join("delishd.sock"), &own).unwrap());
+        assert_eq!(mode(&own), 0o700);
+        assert_eq!(mode(&own.join("delishd.sock")), 0o600);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

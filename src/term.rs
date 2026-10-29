@@ -3,7 +3,7 @@
 
 use crate::proto::Size;
 
-pub use os::{Raw, is_tty, size};
+pub use os::{Raw, is_tty, size, stdout_is_tty};
 
 #[cfg(unix)]
 mod os {
@@ -11,6 +11,10 @@ mod os {
 
     pub fn is_tty() -> bool {
         unsafe { libc::isatty(0) == 1 }
+    }
+
+    pub fn stdout_is_tty() -> bool {
+        unsafe { libc::isatty(1) == 1 }
     }
 
     pub fn size() -> Option<Size> {
@@ -66,6 +70,11 @@ mod os {
     pub fn is_tty() -> bool {
         let mut mode: CONSOLE_MODE = 0;
         unsafe { GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &mut mode) != 0 }
+    }
+
+    pub fn stdout_is_tty() -> bool {
+        let mut mode: CONSOLE_MODE = 0;
+        unsafe { GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &mut mode) != 0 }
     }
 
     pub fn size() -> Option<Size> {

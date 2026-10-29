@@ -10,14 +10,19 @@ use std::time::Duration;
 
 use crate::proto::{Size, Spawn};
 
-pub struct Reader(File);
-pub struct Writer(File);
+pub struct Reader {
+    file: File,
+    stop: Arc<AtomicBool>,
+}
+
+pub struct Writer(Option<File>);
 
 pub struct Control {
     master: File,
     pid: i32,
     child: Mutex<Option<Child>>,
     done: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
 }
 
 fn winsize(size: Size) -> libc::winsize {
@@ -37,7 +42,7 @@ fn cloexec(fd: i32) -> io::Result<()> {
     Ok(())
 }
 
-pub fn spawn(s: &Spawn) -> io::Result<(Reader, Writer, Control)> {
+pub fn spawn(s: &Spawn) -> io::Result<(Vec<Reader>, Writer, Control)> {
     let mut ws = winsize(s.size);
     let (mut m, mut sl) = (-1, -1);
     if unsafe {
@@ -67,17 +72,31 @@ pub fn spawn(s: &Spawn) -> io::Result<(Reader, Writer, Control)> {
     };
     cmd.current_dir(cwd);
     cmd.envs(s.env.iter().map(|(k, v)| (k, v)));
-    cmd.stdin(Stdio::from(slave.try_clone()?));
-    cmd.stdout(Stdio::from(slave.try_clone()?));
+    let mut input = None;
+    if s.stdin_tty {
+        cmd.stdin(Stdio::from(slave.try_clone()?));
+    } else {
+        let (read, write) = std::io::pipe()?;
+        cmd.stdin(read);
+        input = Some(File::from(OwnedFd::from(write)));
+    }
+    let mut piped_out = None;
+    if s.stdout_tty {
+        cmd.stdout(Stdio::from(slave.try_clone()?));
+    } else {
+        let (read, write) = std::io::pipe()?;
+        cmd.stdout(write);
+        piped_out = Some(File::from(OwnedFd::from(read)));
+    }
     cmd.stderr(Stdio::from(slave));
     // its own session, with the pty as its controlling terminal: job control, ^C and SIGWINCH reach it as they would
-    // from a terminal window. stdin is the pty by the time this runs
+    // from a terminal window. stderr is the pty by the time this runs, whatever stdin and stdout are
     unsafe {
         cmd.pre_exec(|| {
             if libc::setsid() < 0 {
                 return Err(io::Error::last_os_error());
             }
-            if libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
+            if libc::ioctl(2, libc::TIOCSCTTY as _, 0) < 0 {
                 return Err(io::Error::last_os_error());
             }
             Ok(())
@@ -88,38 +107,72 @@ pub fn spawn(s: &Spawn) -> io::Result<(Reader, Writer, Control)> {
     drop(cmd);
 
     let master = File::from(master);
-    let reader = Reader(master.try_clone()?);
-    let writer = Writer(master.try_clone()?);
+    let stop = Arc::new(AtomicBool::new(false));
+    let reader = |file| Reader {
+        file,
+        stop: stop.clone(),
+    };
+    let mut readers = vec![reader(master.try_clone()?)];
+    readers.extend(piped_out.map(reader));
+    let writer = Writer(Some(match input {
+        Some(pipe) => pipe,
+        None => master.try_clone()?,
+    }));
     let pid = child.id() as i32;
     Ok((
-        reader,
+        readers,
         writer,
         Control {
             master,
             pid,
             child: Mutex::new(Some(child)),
             done: Arc::new(AtomicBool::new(false)),
+            stop,
         },
     ))
 }
 
 impl Read for Reader {
+    /// a read that waits a tenth of a second at a time, so a stop ends it even with nothing to read
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        match self.0.read(buf) {
-            // linux ends a master whose slave is closed with EIO rather than a 0
-            Err(e) if e.raw_os_error() == Some(libc::EIO) => Ok(0),
-            r => r,
+        loop {
+            if self.stop.load(Ordering::SeqCst) {
+                return Ok(0);
+            }
+            let mut fd = libc::pollfd {
+                fd: self.file.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            if unsafe { libc::poll(&mut fd, 1, 100) } == 0 {
+                continue;
+            }
+            return match self.file.read(buf) {
+                // linux ends a master whose slave is closed with EIO rather than a 0
+                Err(e) if e.raw_os_error() == Some(libc::EIO) => Ok(0),
+                r => r,
+            };
         }
+    }
+}
+
+impl Writer {
+    /// the end of the command's stdin, when it is a pipe; a pty's has no end but its close
+    pub fn close(&mut self) {
+        self.0 = None;
     }
 }
 
 impl Write for Writer {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.write(buf)
+        match self.0.as_mut() {
+            Some(f) => f.write(buf),
+            None => Err(io::ErrorKind::BrokenPipe.into()),
+        }
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.0.flush()
+        self.0.as_mut().map_or(Ok(()), |f| f.flush())
     }
 }
 
@@ -162,4 +215,10 @@ impl Control {
 
     /// a unix pty has nothing to close beyond its fds
     pub fn close(&self) {}
+
+    /// the readers end, though something the command left behind still holds the terminal: once they and the server
+    /// let go of the master, that holder gets the hangup a closed terminal gives, as sshd's sessions do
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
 }

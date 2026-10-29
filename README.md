@@ -62,11 +62,18 @@ not the one the hop uses, when a local server is running.
   of its own on that host, which joins ssh to the local socket. If `delishd` exits, every session it runs ends with
   it, as a terminal's tabs do; run zellij or tmux inside a session that has to outlive a restart.
 - `delishd` listens on a unix socket at `~/.delish/delishd.sock` (`%USERPROFILE%` on Windows), in a directory only
-  its user can open. `DELISH_SOCKET` moves it. It logs to `~/.delish/delishd.log`.
+  its user can open (a directory `DELISH_SOCKET` moves it to is left as it is). It logs to `~/.delish/delishd.log`,
+  which names each command's program but never its arguments, and starts again past a megabyte, the last one kept as
+  `delishd.log.1`.
 - `delish run` sends the command, its cwd, its terminal size and `TERM`, then relays keys and resizes one way and
   output the other. Its exit code is the command's.
 - The command runs on a pty: `openpty` on Linux and macOS, the console's own ConPTY on Windows. It gets the server's
   environment, which is the desktop session's.
+- Where the client's stdin or stdout is not a terminal (`delish host cmd < in > out`), the command's is a pipe, as
+  with `ssh` without `-t`: piped input ends when the client's does and is not echoed back, and output to a file is
+  byte for byte, with no `\r` before each `\n`. The pty stays the command's terminal and its stderr.
+- When the command has exited, its terminal is closed after at most two seconds, as sshd closes a session's: a
+  background job still holding it gets the hangup a closed window gives, rather than keeping the session open.
 - A client that goes away takes its command with it, as a closed terminal does. Over `ssh -t`, dropping the
   connection ends the command; without `-t`, sshd leaves the client running, as it does any command.
 - On Windows a login shell that is a batch file (`shell.bat`) is started through `cmd.exe` with the quoting Rust's
@@ -75,6 +82,16 @@ not the one the hop uses, when a local server is running.
 - Commands run with the server's rights, never the ssh login's. An administrator's ssh login on Windows is elevated;
   a server started in the desktop session has the user's own, filtered token, so its commands are not. `delishd`
   refuses to start elevated, in session 0 (where a Windows ssh login is), or as root.
+
+## Notes
+
+- On Windows, ConPTY writes its own terminal setup sequences (a screen clear, the window title, mouse and focus
+  modes) to the terminal, so a command's output redirected to a file holds them too, though its stdout is a pipe.
+- PowerShell's `-c` exits 1 for any native command that failed, whatever its code: end a remote PowerShell command
+  with `; exit $LASTEXITCODE` to pass the code through a Windows host.
+- On macOS, `delishd` runs in the Aqua session, where privacy permissions apply to it: macOS asks once for Local
+  Network access (any command reaching the LAN), and once per app it controls (Automation, e.g. UTM). Installed by
+  ghpm, the permission belongs to the shim, which stays the same file across delish upgrades.
 
 ## Starting the server in the session
 

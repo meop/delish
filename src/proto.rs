@@ -11,6 +11,8 @@ pub const SPAWN: u8 = 1;
 pub const INPUT: u8 = 2;
 /// client → server: the terminal's new size
 pub const RESIZE: u8 = 3;
+/// client → server: the client's stdin ended; sent only when it is not a terminal
+pub const EOF: u8 = 4;
 /// server → client: bytes the command's terminal wrote
 pub const OUTPUT: u8 = 10;
 /// server → client: the command's exit code, last
@@ -23,7 +25,7 @@ pub const READY: u8 = 13;
 pub const HELLO: u8 = 14;
 
 /// the frames and their payloads; a change to either is a new protocol
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const MAX_FRAME: u32 = 16 << 20;
@@ -117,6 +119,9 @@ impl Size {
 pub struct Spawn {
     pub size: Size,
     pub login: bool,
+    /// whether the client's stdin and stdout are terminals: one that is not is a pipe for the command too
+    pub stdin_tty: bool,
+    pub stdout_tty: bool,
     pub cwd: String,
     pub argv: Vec<String>,
     pub env: Vec<(String, String)>,
@@ -127,6 +132,7 @@ impl Spawn {
         let mut b = PROTOCOL.to_le_bytes().to_vec();
         b.extend_from_slice(&self.size.encode());
         b.push(self.login as u8);
+        b.push(self.stdin_tty as u8 | (self.stdout_tty as u8) << 1);
         put_str(&mut b, &self.cwd);
         b.extend_from_slice(&(self.argv.len() as u32).to_le_bytes());
         for a in &self.argv {
@@ -159,6 +165,8 @@ impl Spawn {
         at += 4;
         let login = *b.get(at).ok_or_else(|| bad("short frame"))? != 0;
         at += 1;
+        let ttys = *b.get(at).ok_or_else(|| bad("short frame"))?;
+        at += 1;
         let cwd = take_str(b, &mut at)?;
         let argc = take_u32(b, &mut at)?;
         let mut argv = Vec::new();
@@ -178,6 +186,8 @@ impl Spawn {
         Ok(Spawn {
             size,
             login,
+            stdin_tty: ttys & 1 != 0,
+            stdout_tty: ttys & 2 != 0,
             cwd,
             argv,
             env,
@@ -221,11 +231,30 @@ mod tests {
                 cols: 120,
             },
             login: false,
+            stdin_tty: true,
+            stdout_tty: true,
             cwd: "/home/x".into(),
             argv: vec!["nu".into(), "-c".into(), "print ünï".into()],
             env: vec![("TERM".into(), "xterm-256color".into())],
         };
         assert_eq!(Spawn::decode(&s.encode()).unwrap(), s);
+    }
+
+    #[test]
+    fn whether_stdin_and_stdout_are_terminals_round_trips() {
+        for (stdin_tty, stdout_tty) in [(true, true), (false, true), (true, false), (false, false)]
+        {
+            let s = Spawn {
+                size: Size { rows: 1, cols: 1 },
+                login: true,
+                stdin_tty,
+                stdout_tty,
+                cwd: String::new(),
+                argv: vec![],
+                env: vec![],
+            };
+            assert_eq!(Spawn::decode(&s.encode()).unwrap(), s);
+        }
     }
 
     #[test]
@@ -241,6 +270,8 @@ mod tests {
         let s = Spawn {
             size: Size { rows: 1, cols: 1 },
             login: true,
+            stdin_tty: true,
+            stdout_tty: true,
             cwd: String::new(),
             argv: vec![],
             env: vec![],
@@ -270,6 +301,8 @@ mod tests {
         let s = Spawn {
             size: Size { rows: 1, cols: 1 },
             login: false,
+            stdin_tty: true,
+            stdout_tty: true,
             cwd: String::new(),
             argv: vec![],
             env: vec![],
@@ -282,6 +315,8 @@ mod tests {
         let shell = |argv: Vec<String>| Spawn {
             size: Size { rows: 1, cols: 1 },
             login: true,
+            stdin_tty: true,
+            stdout_tty: true,
             cwd: String::new(),
             argv,
             env: vec![],

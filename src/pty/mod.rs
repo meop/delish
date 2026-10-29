@@ -17,6 +17,7 @@ use windows as os;
 
 pub use os::{Control, Reader, Writer};
 
-pub fn spawn(s: &Spawn) -> io::Result<(Reader, Writer, Control)> {
+/// the command's outputs (the terminal, and stdout when it is a pipe), its input and its control
+pub fn spawn(s: &Spawn) -> io::Result<(Vec<Reader>, Writer, Control)> {
     os::spawn(s)
 }

@@ -230,6 +230,8 @@ fn spawn(argv: Vec<String>, login: bool, cwd: String) -> Spawn {
     Spawn {
         size: term::size().unwrap_or(FALLBACK),
         login,
+        stdin_tty: term::is_tty(),
+        stdout_tty: term::stdout_is_tty(),
         cwd,
         argv,
         env,
@@ -313,7 +315,12 @@ fn take_over(up: &Sink, size: Size) -> Option<term::Raw> {
         let mut buf = [0u8; 4096];
         loop {
             match stdin.read(&mut buf) {
-                Ok(0) | Err(_) => break,
+                Ok(0) | Err(_) => {
+                    if !tty {
+                        let _ = proto::write_frame(&mut *keys.lock().unwrap(), proto::EOF, &[]);
+                    }
+                    break;
+                }
                 Ok(n) => {
                     if proto::write_frame(&mut *keys.lock().unwrap(), proto::INPUT, &buf[..n])
                         .is_err()
