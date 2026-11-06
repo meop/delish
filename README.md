@@ -136,7 +136,10 @@ a link starts without a new connection or handshake. Nested logins go as far as 
   with `; exit $LASTEXITCODE` to pass the code through a Windows host.
 - On macOS, `delishd` runs in the Aqua session, where privacy permissions apply to it: macOS asks once for Local
   Network access (any command reaching the LAN), and once per app it controls (Automation, e.g. UTM). Installed by
-  ghpm, the permission belongs to the shim, which stays the same file across delish upgrades.
+  ghpm, the permission belongs to the shim, which stays the same file across delish upgrades. A shim stamped again
+  from a newer wedge (`ghpm sync --reinstall`) is a new program to macOS, so it asks again, and the answer reaches a
+  `delishd` started after it: restart it once you have allowed it. Until then it cannot reach another host (`No
+  route to host`).
 
 ## Starting the server in the session
 
@@ -149,7 +152,10 @@ display and token. Stopping it leaves programs a session started and left runnin
 | macOS   | a LaunchAgent with `RunAtLoad`, `LimitLoadToSessionType` `Aqua` and `AbandonProcessGroup`                     | `launchctl kickstart -k gui/$UID/<label>`           |
 | Windows | a scheduled task at logon, interactive, `RunLevel` limited, no time limit (`Register-ScheduledTask`)          | `Stop-Process -Name delishd`, `Start-ScheduledTask` |
 
-An upgrade replaces the binary, not the server already running; until it is restarted, `delish status` exits 3.
+An upgrade replaces the binary, not the server already running; until it is restarted, `delish status` exits 3. The
+binary it runs from has to stay until then: macOS's firewall drops every connection to a program whose binary is gone,
+and a client then hears that the server closed the connection before answering. ghpm keeps a version a program runs
+from (0.17.2 on), and its `tidy` removes it once nothing does.
 
 To roll a new version out: install it on each machine, by whatever put delish there, then restart its server with the
 command above; `delish status` says which still run an older one. A restart ends every session the server runs, the

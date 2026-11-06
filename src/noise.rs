@@ -55,6 +55,22 @@ fn recv(s: &mut TcpStream) -> io::Result<Vec<u8>> {
     Ok(msg)
 }
 
+/// a connection dropped before the other side's first answer, as a firewall in front of its server drops one, or as
+/// macOS's does once the server's own binary is gone: an upgrade that removed it, with the server not restarted
+fn closed_early(e: io::Error) -> io::Error {
+    match e.kind() {
+        io::ErrorKind::UnexpectedEof
+        | io::ErrorKind::ConnectionReset
+        | io::ErrorKind::ConnectionAborted
+        | io::ErrorKind::BrokenPipe => io::Error::new(
+            e.kind(),
+            "its server closed the connection before answering: a firewall there dropped it, or its delishd \
+             needs a restart after an upgrade",
+        ),
+        _ => e,
+    }
+}
+
 fn remote_key(h: &snow::HandshakeState) -> io::Result<Key> {
     h.get_remote_static()
         .and_then(|k| k.try_into().ok())
@@ -76,8 +92,8 @@ pub fn initiate(
         .map_err(bad)?;
     let mut buf = vec![0u8; MAX_MESSAGE];
     let n = h.write_message(&[], &mut buf).map_err(bad)?;
-    send(&mut s, &buf[..n])?;
-    let msg = recv(&mut s)?;
+    send(&mut s, &buf[..n]).map_err(closed_early)?;
+    let msg = recv(&mut s).map_err(closed_early)?;
     h.read_message(&msg, &mut buf)
         .map_err(|_| bad("the handshake failed: another protocol, or not delish"))?;
     let theirs = remote_key(&h)?;
@@ -280,6 +296,21 @@ mod tests {
         let (c, s, other) = (pair(), pair(), pair());
         let (ours, _) = connect(c, s, other.1, c.1);
         assert_eq!(ours.err().unwrap().kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn a_server_that_drops_the_connection_unanswered_is_said_to_have() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let dropped = std::thread::spawn(move || drop(l.accept().unwrap()));
+        let s = TcpStream::connect(addr).unwrap();
+        dropped.join().unwrap();
+        let err = initiate(s, &pair().0, |_| true).err().unwrap();
+        assert!(
+            err.to_string()
+                .contains("closed the connection before answering"),
+            "{err}"
+        );
     }
 
     #[test]
