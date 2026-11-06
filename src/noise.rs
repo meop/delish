@@ -262,9 +262,12 @@ mod tests {
         let (mut sr, mut sw, client_key) = theirs.unwrap();
         assert_eq!((server_key, client_key), (s.1, c.1));
         let big = vec![7u8; 200_000];
-        cw.write_all(&big).unwrap();
+        // read while it is written: windows on arm64 buffers less than this between two sockets
+        let sent = big.clone();
+        let writer = std::thread::spawn(move || cw.write_all(&sent));
         let mut got = vec![0u8; big.len()];
         sr.read_exact(&mut got).unwrap();
+        writer.join().unwrap().unwrap();
         assert_eq!(got, big);
         sw.write_all(b"back").unwrap();
         let mut back = [0u8; 4];

@@ -61,36 +61,18 @@ jobs:
       - name: Lint (Windows)
         run: cargo clippy --locked --all-targets --target x86_64-pc-windows-msvc -- -D warnings
 
-  test:
-    name: Test (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ ubuntu-24.04, macos-26, windows-2025 ]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Test
-        run: cargo test --locked
-
-  build:
-    name: Build (${{ matrix.artifact }})
-    needs: [ version, validate, test ]
-    if: github.ref == 'refs/heads/main' && needs.version.outputs.changed == 'true'
+  target:
+    name: Target (${{ matrix.artifact }})
+    needs: [ version ]
     permissions:
       contents: read
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: macos-26
             target: aarch64-apple-darwin
             artifact: darwin-aarch64
-          - os: macos-26
-            target: x86_64-apple-darwin
-            artifact: darwin-x86_64
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             artifact: linux-aarch64
@@ -104,6 +86,8 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact: windows-x86_64
     runs-on: ${{ matrix.os }}
+    env:
+      RELEASE: ${{ github.ref == 'refs/heads/main' && needs.version.outputs.changed == 'true' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -114,10 +98,13 @@ jobs:
       - name: Install musl tools
         if: runner.os == 'Linux'
         run: sudo apt-get install -y musl-tools
+      - name: Test
+        run: cargo test --locked --target ${{ matrix.target }}
       - name: Build
+        if: env.RELEASE == 'true'
         run: cargo build --locked --release --target ${{ matrix.target }}
       - name: Package (Unix)
-        if: runner.os != 'Windows'
+        if: env.RELEASE == 'true' && runner.os != 'Windows'
         shell: bash
         run: |
           VERSION=${{ needs.version.outputs.new_version }}
@@ -128,7 +115,7 @@ jobs:
           cp LICENSE dist/$ARTIFACT/
           tar -czf dist/$ARTIFACT.tar.gz -C dist $ARTIFACT
       - name: Package (Windows)
-        if: runner.os == 'Windows'
+        if: env.RELEASE == 'true' && runner.os == 'Windows'
         shell: pwsh
         run: |
           $VERSION = "${{ needs.version.outputs.new_version }}"
@@ -139,6 +126,7 @@ jobs:
           Copy-Item "LICENSE" "dist/$ARTIFACT/"
           Compress-Archive -Path "dist/$ARTIFACT" -DestinationPath "dist/$ARTIFACT.zip"
       - name: Upload artifact
+        if: env.RELEASE == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: delish-${{ needs.version.outputs.new_version }}-${{ matrix.artifact }}
@@ -147,7 +135,7 @@ jobs:
 
   publish:
     name: Publish
-    needs: [ version, build ]
+    needs: [ version, validate, target ]
     if: github.ref == 'refs/heads/main' && needs.version.outputs.changed == 'true'
     permissions:
       contents: write

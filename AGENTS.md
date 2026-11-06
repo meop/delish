@@ -36,7 +36,6 @@ The musl targets link with `musl-gcc` (`.cargo/config.toml`); the Windows target
 cargo build --release --target aarch64-unknown-linux-musl
 cargo build --release --target x86_64-unknown-linux-musl
 cargo build --release --target aarch64-apple-darwin
-cargo build --release --target x86_64-apple-darwin   # cross-compiled from macOS arm64
 cargo build --release --target aarch64-pc-windows-msvc
 cargo build --release --target x86_64-pc-windows-msvc
 ```
@@ -49,7 +48,7 @@ To cut a release: bump `version` in `Cargo.toml` and push to `main`. A version w
 (`0.1.0-alpha.1`) is published as a GitHub prerelease; one without, as a release.
 
 The CI pipeline (`.github/workflows/pipeline.yaml`) runs: Version check (skips the rest if `v<version>` already
-exists) → Validate (fmt + clippy, for Linux and for Windows) and Test (on Linux, macOS and Windows) → Build for every target → Publish, which signs
+exists) → Validate (fmt + clippy, for Linux and for Windows) and, for every release target on a runner of its own platform and architecture, Test then Build → Publish, which signs
 `SHA256SUMS`, creates a GPG-signed tag `v<version>` and publishes the archives to a public GitHub release. Requires
 the `GPG_PRIVATE_KEY` and `GPG_PASSPHRASE` repository secrets. Never create the tag by hand.
 
@@ -78,7 +77,7 @@ the `GPG_PRIVATE_KEY` and `GPG_PASSPHRASE` repository secrets. Never create the 
 
 ## Testing on a real host
 
-CI runs the tests on Linux, macOS and Windows. On a Windows machine of your own, run `cargo test` in its desktop
+CI runs the tests for every release target, on its own platform and architecture. On a Windows machine of your own, run `cargo test` in its desktop
 session, not an ssh login: rustup's `cargo` and `rustc` proxies cannot start in an ssh login (os error 448), which
 `delish shell -c` gets around. A test that reads a pty reads it while the command runs: macOS drops what a pty holds
 once its last user closes it.
