@@ -2,6 +2,10 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 fn main() {
+    if matches!(std::env::args().nth(1).as_deref(), Some("-V" | "--version")) {
+        println!("{}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     if let Err(e) = delish::server::serve() {
         delish::server::log(&format!("serve: {e}"));
         eprintln!("delishd: {e}");

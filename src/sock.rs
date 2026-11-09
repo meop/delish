@@ -48,11 +48,17 @@ fn listen_at(path: &std::path::Path, own: &std::path::Path) -> io::Result<Listen
             std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
         }
     }
-    if Stream::connect(path).is_ok() {
-        return Err(io::Error::new(
-            io::ErrorKind::AddrInUse,
-            format!("a delishd already listens on {}", path.display()),
-        ));
+    // a successor the old delishd started itself waits for the old one to go
+    let wait_until = std::env::var_os(crate::upgrade::REPLACING_ENV)
+        .map(|_| std::time::Instant::now() + std::time::Duration::from_secs(10));
+    while Stream::connect(path).is_ok() {
+        if wait_until.is_none_or(|end| std::time::Instant::now() > end) {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                format!("a delishd already listens on {}", path.display()),
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
     let _ = std::fs::remove_file(path);
     let listener = Listener::bind(path)?;

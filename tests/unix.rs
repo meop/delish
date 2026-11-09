@@ -210,3 +210,60 @@ fn with_stdout_redirected_the_terminals_bytes_go_to_the_clients_stderr() {
         "stderr did not reach the client's terminal"
     );
 }
+
+/// a delishd started through a link, the way a service starts it through the shim on PATH: once the link names a
+/// program of another version and no session is running, it exits with the restart code, for its service manager
+#[test]
+fn a_delishd_hands_over_to_a_new_version_once_its_sessions_end() {
+    let home = std::env::temp_dir().join(format!("delish-e2e-upgrade-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let link = home.join("delishd");
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_delishd"), &link).unwrap();
+    let mut child = Command::new(&link)
+        .env("HOME", &home)
+        .env("DELISH_SOCKET", home.join("s.sock"))
+        .env("DELISH_UPGRADE_CHECK", "1")
+        .spawn()
+        .unwrap();
+    let end = Instant::now() + Duration::from_secs(5);
+    while !home.join("s.sock").exists() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let session = std::thread::spawn({
+        let home = home.clone();
+        move || {
+            Command::new(env!("CARGO_BIN_EXE_delish"))
+                .args(["run", "--", "sleep", "3"])
+                .env("HOME", &home)
+                .env("DELISH_SOCKET", home.join("s.sock"))
+                .stdin(Stdio::null())
+                .output()
+                .unwrap()
+        }
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    let newer = home.join("newer");
+    std::fs::write(&newer, "#!/bin/sh\necho 99.0.0\n").unwrap();
+    std::fs::set_permissions(&newer, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    std::fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(&newer, &link).unwrap();
+
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "it handed over while a session ran"
+    );
+    assert!(session.join().unwrap().status.success());
+
+    let end = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < end, "it did not hand over once idle");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(status.code(), Some(delish::upgrade::RESTART_CODE));
+    let _ = std::fs::remove_dir_all(&home);
+}

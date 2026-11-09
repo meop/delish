@@ -17,6 +17,7 @@ pub mod session;
 pub mod shell;
 pub mod sock;
 pub mod term;
+pub mod upgrade;
 
 pub const USAGE: &str = "usage: delish <host> [command]
        delish run [--] <command> [args...]
