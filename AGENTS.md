@@ -72,7 +72,7 @@ the `GPG_PRIVATE_KEY` and `GPG_PASSPHRASE` repository secrets. Never create the 
 | `src/session.rs` | one command on its terminal, its frames to a sink: the server's own connection, or a link |
 | `src/mux.rs`     | a link's frames, and the outbox and inbox that number each direction of a session by offset, keep what was sent until acknowledged, pause a sender at its cap, and resend after a drop |
 | `src/link.rs`    | this server's links to other hosts: one TCP connection per host in `hosts`, its sessions, reconnecting with backoff, heartbeats, the idle close and the grace |
-| `src/upgrade.rs` | `delishd` following its upgrades: the path it was started from asked for `--version` every five minutes, and once that is another version and no session runs, exit 75 for the service manager (unix) or start the successor itself (Windows) |
+| `src/upgrade.rs` | `delishd` noticing its upgrades: the path it was started from asked for `--version` every five minutes, and another version logged once, with what moves it; it keeps running, on every platform |
 | `src/hosted.rs`  | the sessions a server runs for links: detached, not ended, when a link drops, until a link attaches them or their grace runs out |
 | `tests/link.rs`  | two servers on one machine, keys exchanged with the CLI, linked through a TCP relay of the test's that counts connections and cuts them: sharing, a drop mid-output, a client gone, the grace, the idle close, output past the cap, a wrong host key, an unauthorized client, ping |
 

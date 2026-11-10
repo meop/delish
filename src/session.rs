@@ -2,7 +2,7 @@
 //! another server that carries many.
 
 use std::io::{self, Read, Write};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -11,14 +11,6 @@ use std::time::{Duration, Instant};
 use crate::proto::{self, Size, Spawn};
 use crate::pty;
 use crate::shell;
-
-/// the sessions alive in this process, for whether a restart would cut one off
-static RUNNING: AtomicUsize = AtomicUsize::new(0);
-
-/// how many sessions this process holds: started and not yet dropped, attached or detached
-pub fn running() -> usize {
-    RUNNING.load(Ordering::SeqCst)
-}
 
 /// where a session's frames go: OUTPUT and STDERR as they come, EXIT last. an error stops the reader that met it
 pub type Sink = Arc<dyn Fn(u8, &[u8]) -> io::Result<()> + Send + Sync>;
@@ -95,7 +87,6 @@ impl Session {
                 code
             })
         };
-        RUNNING.fetch_add(1, Ordering::SeqCst);
         Ok(Session {
             writer: Mutex::new(writer),
             control,
@@ -148,11 +139,5 @@ impl Session {
             Some(w) => w.join().unwrap_or(255),
             None => 255,
         }
-    }
-}
-
-impl Drop for Session {
-    fn drop(&mut self) {
-        RUNNING.fetch_sub(1, Ordering::SeqCst);
     }
 }

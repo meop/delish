@@ -212,9 +212,9 @@ fn with_stdout_redirected_the_terminals_bytes_go_to_the_clients_stderr() {
 }
 
 /// a delishd started through a link, the way a service starts it through the shim on PATH: once the link names a
-/// program of another version and no session is running, it exits with the restart code, for its service manager
+/// program of another version, it logs that once, with what moves it, and keeps running
 #[test]
-fn a_delishd_hands_over_to_a_new_version_once_its_sessions_end() {
+fn a_delishd_says_once_that_another_version_is_installed_and_keeps_running() {
     let home = std::env::temp_dir().join(format!("delish-e2e-upgrade-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
@@ -230,40 +230,31 @@ fn a_delishd_hands_over_to_a_new_version_once_its_sessions_end() {
     while !home.join("s.sock").exists() && Instant::now() < end {
         std::thread::sleep(Duration::from_millis(20));
     }
-    let session = std::thread::spawn({
-        let home = home.clone();
-        move || {
-            Command::new(env!("CARGO_BIN_EXE_delish"))
-                .args(["run", "--", "sleep", "3"])
-                .env("HOME", &home)
-                .env("DELISH_SOCKET", home.join("s.sock"))
-                .stdin(Stdio::null())
-                .output()
-                .unwrap()
-        }
-    });
-    std::thread::sleep(Duration::from_millis(500));
     let newer = home.join("newer");
     std::fs::write(&newer, "#!/bin/sh\necho 99.0.0\n").unwrap();
     std::fs::set_permissions(&newer, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     std::fs::remove_file(&link).unwrap();
     std::os::unix::fs::symlink(&newer, &link).unwrap();
 
-    std::thread::sleep(Duration::from_millis(1500));
-    assert!(
-        child.try_wait().unwrap().is_none(),
-        "it handed over while a session ran"
-    );
-    assert!(session.join().unwrap().status.success());
-
-    let end = Instant::now() + Duration::from_secs(10);
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break status;
-        }
-        assert!(Instant::now() < end, "it did not hand over once idle");
-        std::thread::sleep(Duration::from_millis(100));
+    let log = home.join(".delish").join("delishd.log");
+    let said = |log: &std::path::Path| {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .matches("delishd 99.0.0 is installed")
+            .count()
     };
-    assert_eq!(status.code(), Some(delish::upgrade::RESTART_CODE));
+    let end = Instant::now() + Duration::from_secs(10);
+    while said(&log) == 0 {
+        assert!(
+            Instant::now() < end,
+            "it did not say a new version is installed"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(said(&log), 1, "it said so more than once");
+    assert!(child.try_wait().unwrap().is_none(), "it stopped running");
+    let _ = child.kill();
+    let _ = child.wait();
     let _ = std::fs::remove_dir_all(&home);
 }

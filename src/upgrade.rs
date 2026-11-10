@@ -1,22 +1,18 @@
-//! a delishd that an upgrade left behind restarts into the new one: it asks the program at the path it was started
-//! from (the shim on PATH, a symlink, whatever the service manager runs) for its version, and once that differs from
-//! its own and no session is running, it hands over. on unix it exits with RESTART_CODE and the service manager
-//! (systemd's `Restart=on-failure`, launchd's `KeepAlive`) starts the new one. Windows' task scheduler restarts only a
-//! task that failed to start, so there delishd starts its successor itself, which waits for the socket
+//! a delishd that an upgrade left behind says so: it asks the program at the path it was started from (the shim on
+//! PATH, a symlink, whatever the service manager runs) for its version, and logs once when that is another version.
+//! it keeps running: the move is delish's sync, which lets the new version through the firewall and then restarts
+//! delishd, the same on every platform
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// how a delishd that hands over to a newer one exits: EX_TEMPFAIL, a failure, so the service manager restarts it
-pub const RESTART_CODE: i32 = 75;
-
-/// set on a successor delishd starts itself: it waits for the old one's socket rather than refusing
-pub const REPLACING_ENV: &str = "DELISH_REPLACING";
-
 const CHECK_EVERY: Duration = Duration::from_secs(300);
 const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// what moves a running delishd to the installed one, firewall rule and all
+pub const MOVE_HINT: &str = "`wut p s delish` moves to it";
 
 /// the path delishd was started from: argv[0] when it names a path, else where PATH finds it
 pub fn start_path(arg0: &OsString, cwd: &Path, path_var: Option<OsString>) -> Option<PathBuf> {
@@ -43,9 +39,13 @@ pub fn parse_version(out: &str) -> Option<String> {
         .map(|v| v.trim_start_matches('v').to_string())
 }
 
-/// whether to hand over: what would start now is another version, and no session would be cut off
-pub fn hand_over(ours: &str, found: Option<&str>, sessions: usize) -> bool {
-    sessions == 0 && found.is_some_and(|f| f != ours)
+/// the version to say is installed: one other than ours and other than the one already said
+pub fn newly_installed<'a>(
+    ours: &str,
+    found: Option<&'a str>,
+    said: Option<&str>,
+) -> Option<&'a str> {
+    found.filter(|f| *f != ours && Some(*f) != said)
 }
 
 /// the version of the program at path, or none when it does not answer in time
@@ -75,7 +75,7 @@ pub fn version_at(path: &Path) -> Option<String> {
     parse_version(&out)
 }
 
-/// checks every CHECK_EVERY (DELISH_UPGRADE_CHECK seconds, for tests) and hands over when it should
+/// checks every CHECK_EVERY (DELISH_UPGRADE_CHECK seconds, for tests) and logs a newly installed version once
 pub fn watch() {
     let arg0 = std::env::args_os().next().unwrap_or_default();
     let cwd = std::env::current_dir().unwrap_or_default();
@@ -88,39 +88,16 @@ pub fn watch() {
         .and_then(|s| s.parse().ok())
         .map_or(CHECK_EVERY, Duration::from_secs);
     let ours = env!("CARGO_PKG_VERSION");
+    let mut said: Option<String> = None;
     loop {
         std::thread::sleep(every);
-        let sessions = crate::session::running();
-        if sessions > 0 {
-            continue;
-        }
         let found = version_at(&start);
-        if hand_over(ours, found.as_deref(), sessions) {
-            let found = found.unwrap_or_default();
+        if let Some(v) = newly_installed(ours, found.as_deref(), said.as_deref()) {
             crate::server::log(&format!(
-                "upgrade: {} is now {found}, this is {ours}: handing over",
+                "upgrade: delishd {v} is installed at {}, this is {ours}: {MOVE_HINT}",
                 start.display()
             ));
-            restart(&start);
-        }
-    }
-}
-
-#[cfg(unix)]
-fn restart(_start: &Path) -> ! {
-    std::process::exit(RESTART_CODE)
-}
-
-#[cfg(windows)]
-fn restart(start: &Path) -> ! {
-    match Command::new(start).env(REPLACING_ENV, "1").spawn() {
-        Ok(_) => std::process::exit(0),
-        Err(e) => {
-            crate::server::log(&format!(
-                "upgrade: could not start {}: {e}",
-                start.display()
-            ));
-            std::process::exit(RESTART_CODE)
+            said = Some(v.to_string());
         }
     }
 }
@@ -170,11 +147,14 @@ mod tests {
     }
 
     #[test]
-    fn it_hands_over_only_to_another_version_and_only_when_idle() {
-        assert!(hand_over("0.6.2", Some("0.6.3"), 0));
-        assert!(hand_over("0.6.3", Some("0.6.2"), 0));
-        assert!(!hand_over("0.6.2", Some("0.6.2"), 0));
-        assert!(!hand_over("0.6.2", Some("0.6.3"), 1));
-        assert!(!hand_over("0.6.2", None, 0));
+    fn another_installed_version_is_said_once() {
+        assert_eq!(newly_installed("0.7.1", Some("0.7.2"), None), Some("0.7.2"));
+        assert_eq!(newly_installed("0.7.1", Some("0.7.2"), Some("0.7.2")), None);
+        assert_eq!(
+            newly_installed("0.7.1", Some("0.7.3"), Some("0.7.2")),
+            Some("0.7.3")
+        );
+        assert_eq!(newly_installed("0.7.1", Some("0.7.1"), None), None);
+        assert_eq!(newly_installed("0.7.1", None, None), None);
     }
 }

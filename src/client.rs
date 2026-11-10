@@ -88,18 +88,20 @@ pub fn status() -> i32 {
         }
         Some(h) => {
             println!(
-                "delishd {} is listening on {}, and this delish is {}: restart delishd to run this one",
+                "delishd {} is listening on {}, and this delish is {}: {}",
                 h.version,
                 path.display(),
-                proto::VERSION
+                proto::VERSION,
+                crate::upgrade::MOVE_HINT
             );
             3
         }
         None => {
             println!(
-                "a delishd older than this delish {} is listening on {}: restart delishd to run this one",
+                "a delishd older than this delish {} is listening on {}: {}",
                 proto::VERSION,
-                path.display()
+                path.display(),
+                crate::upgrade::MOVE_HINT
             );
             3
         }

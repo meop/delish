@@ -121,11 +121,10 @@ a link starts without a new connection or handshake. Nested logins go as far as 
   connection drops goes with it over `ssh -t`; without `-t`, sshd leaves the client running, as it does any command.
 - On Windows a login shell that is a batch file (`shell.bat`) is started through `cmd.exe` with the quoting Rust's
   standard library gives a batch file, so `|`, `&`, `"` and `%` in the command reach the shell as written.
-- `delishd` follows its own upgrades. Every five minutes it asks the program at the path it was started from (the
-  shim on `PATH`, a symlink, whatever the service manager runs) for `--version`. Once that is another version and no
-  session is running, it hands over: on Linux and macOS it exits with code 75 and its service manager starts the new
-  one; on Windows, whose task scheduler restarts only a task that failed to start, it starts the new one itself, which
-  waits for the old one's socket. A `delishd` started by hand, outside a service, just exits.
+- `delishd` notices its own upgrades. Every five minutes it asks the program at the path it was started from (the
+  shim on `PATH`, a symlink, whatever the service manager runs) for `--version`, and logs once when that is another
+  version. It keeps running, the same on every platform: the move is delish's sync (`wut p s delish`), which lets the
+  new version through the firewall and then restarts `delishd`. `delish status` says so too.
 - On Windows `delishd` is a GUI subsystem binary, so no console window opens in the session.
 - Commands run with the server's rights, never the ssh login's. An administrator's ssh login on Windows is elevated;
   a server started in the desktop session has the user's own, filtered token, so its commands are not. `delishd`

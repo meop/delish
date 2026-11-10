@@ -38,8 +38,6 @@ fn rotate(path: &std::path::Path, limit: u64) {
 pub fn serve() -> io::Result<()> {
     session_check()?;
     let listener = sock::listen()?;
-    // a successor's marker is not the commands' to inherit; still one thread here, so changing the env is safe
-    unsafe { std::env::remove_var(crate::upgrade::REPLACING_ENV) };
     log(&format!(
         "listening on {} (pid {})",
         sock::path().display(),
