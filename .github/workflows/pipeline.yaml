@@ -176,7 +176,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION=${{ needs.version.outputs.new_version }}
-          # a version with a pre-release part (0.1.0-alpha.1) is published as a prerelease
+          # a version with a pre-release part (0.1.0-rc.1) is published as a prerelease
           PRERELEASE=()
           if [[ $VERSION == *-* ]]; then
             PRERELEASE=(--prerelease)

@@ -45,7 +45,7 @@ Add a target with `rustup target add <target>` before building for it.
 ## Publishing
 
 To cut a release: bump `version` in `Cargo.toml` and push to `main`. A version with a pre-release part
-(`0.1.0-alpha.1`) is published as a GitHub prerelease; one without, as a release.
+(`0.1.0-rc.1`) is published as a GitHub prerelease; one without, as a release.
 
 The CI pipeline (`.github/workflows/pipeline.yaml`) runs: Version check (skips the rest if `v<version>` already
 exists) → Validate (fmt + clippy, for Linux and for Windows) and, for every release target on a runner of its own platform and architecture, Test then Build → Publish, which signs
